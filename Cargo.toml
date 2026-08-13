@@ -1,0 +1,11 @@
+[package]
+name = "ftree"
+version = "0.1.0"
+edition = "2021"
+description = "终端交互式文件树工具：鼠标/键盘浏览、多选、复制路径、拼接命令行"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
