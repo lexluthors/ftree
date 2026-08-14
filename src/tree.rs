@@ -181,6 +181,24 @@ impl Tree {
         self.cursor = (self.cursor as isize + delta).clamp(0, last as isize) as usize;
     }
 
+    /// 滚轮滚动：直接滚动内容，光标保持在视口内
+    pub fn scroll_by(&mut self, delta: isize, view_h: usize) {
+        let rows = self.visible.len();
+        if rows == 0 {
+            return;
+        }
+        let view_h = view_h.max(1);
+        // 调整 scroll
+        let new_scroll = (self.scroll as isize + delta).clamp(0, rows.saturating_sub(view_h) as isize);
+        self.scroll = new_scroll as usize;
+        // 确保 cursor 在视口内
+        if self.cursor < self.scroll {
+            self.cursor = self.scroll;
+        } else if self.cursor >= self.scroll + view_h {
+            self.cursor = self.scroll + view_h - 1;
+        }
+    }
+
     /// 返回上级：当前行是展开的目录则先收缩，否则跳到父行。
     pub fn collapse_up(&mut self) {
         let chain = self.visible.get(self.cursor).cloned().unwrap_or_default();

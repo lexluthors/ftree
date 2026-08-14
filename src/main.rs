@@ -45,11 +45,12 @@ fn print_usage() {
     println!("操作（键盘 / 鼠标）:");
     println!("  ↑ ↓ / j k          移动光标          点击目录行    展开/收缩");
     println!("  Enter / → / ←      展开 / 收缩        点击文件行    选中/取消");
-    println!("  空格               选中/取消          每行右侧按钮  [复制] 复制路径  [cd] 复制cd命令  [终端] 打开终端  [打开] 系统文件管理器");
+    println!("  空格               选中/取消          每行右侧按钮  [复制] 复制路径  [cd] 复制cd命令  [终端] 打开终端  [打开] 系统文件管理器  [yolo] Claude Code yolo模式");
     println!("  c                  复制路径（有选中项则复制全部选中）");
     println!("  C                  拼接命令（模板选择）");
     println!("  d                  复制 cd <当前文件夹> 命令（粘贴后按 Enter 执行）");
     println!("  o                  在当前文件夹打开系统终端");
+    println!("  y                  在当前文件夹启动 Claude Code yolo 模式");
     println!("  t                  显示/隐藏隐藏文件");
     println!("  q / Esc            退出");
     println!();

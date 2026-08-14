@@ -133,6 +133,7 @@ impl App {
                 Char('c') => self.copy_paths(),
                 Char('d') => self.copy_cd(),
                 Char('o') => self.open_terminal(),
+                Char('y') => self.open_yolo(),
                 Char('C') => self.open_picker(),
                 Char(' ') => self.toggle_selected(),
                 Char('g') | Home => self.tree.move_cursor(-(self.tree.cursor as isize)),
@@ -166,12 +167,14 @@ impl App {
             }
             MouseEventKind::ScrollUp => {
                 if self.mode == Mode::Browse {
-                    self.tree.move_cursor(-3);
+                    let view_h = self.screen.1.saturating_sub(2) as usize;
+                    self.tree.scroll_by(-3, view_h);
                 }
             }
             MouseEventKind::ScrollDown => {
                 if self.mode == Mode::Browse {
-                    self.tree.move_cursor(3);
+                    let view_h = self.screen.1.saturating_sub(2) as usize;
+                    self.tree.scroll_by(3, view_h);
                 }
             }
             MouseEventKind::Moved => self.hover = Some((col, row)),
@@ -190,12 +193,13 @@ impl App {
             let vis_row = row as usize - 1 + self.tree.scroll;
             if vis_row < self.tree.visible.len() {
                 self.tree.cursor = vis_row;
-                // 按钮热区：[复制]6 / 间隔1 / [cd]4 / 间隔1 / [终端]6 / 间隔1 / [打开]6
+                // 按钮热区：[复制]6 / 间隔1 / [cd]4 / 间隔1 / [终端]6 / 间隔1 / [打开]6 / 间隔1 / [yolo]6
                 let btn = match off {
                     0..=5 => 0,     // [复制]
                     7..=10 => 1,    // [cd]
                     12..=17 => 2,   // [终端]
                     19..=24 => 3,   // [打开]
+                    26..=31 => 4,   // [yolo]
                     _ => return,    // 间隔区点击忽略
                 };
                 self.do_row_button(btn);
@@ -227,6 +231,7 @@ impl App {
             1 => self.copy_cd(),
             2 => self.open_terminal(),
             3 => self.open_file_manager(),
+            4 => self.open_yolo(),
             _ => {}
         }
     }
@@ -339,6 +344,39 @@ impl App {
         match cmd.spawn() {
             Ok(_) => self.set_toast(format!("已在文件管理器中打开 {}", dir.to_string_lossy())),
             Err(e) => self.set_toast(format!("打开文件管理器失败: {e}")),
+        }
+    }
+
+    /// 在终端中启动 Claude Code yolo 模式（--dangerously-skip-permissions）
+    fn open_yolo(&mut self) {
+        let dir = self.tree.cursor_dir();
+        let Some(term) = &self.terminal else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+        let mut cmd = Command::new(&term.name);
+        match term.kind {
+            TermKind::Gnome | TermKind::Alacritty => {
+                cmd.arg("--working-directory").arg(&dir);
+                cmd.arg("-e").arg("claude --dangerously-skip-permissions");
+            }
+            TermKind::Konsole => {
+                cmd.arg("--workdir").arg(&dir);
+                cmd.arg("-e").arg("claude --dangerously-skip-permissions");
+            }
+            TermKind::Kitty => {
+                cmd.arg("-d").arg(&dir);
+                cmd.arg("claude --dangerously-skip-permissions");
+            }
+            TermKind::Xterm | TermKind::Custom => {
+                cmd.current_dir(&dir);
+                cmd.arg("-e").arg("claude --dangerously-skip-permissions");
+            }
+        }
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已在 {} 启动 Claude Code yolo 模式", dir.to_string_lossy())),
+            Err(e) => self.set_toast(format!("启动 Claude Code 失败: {e}")),
         }
     }
 }

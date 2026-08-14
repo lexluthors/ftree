@@ -1,1 +1,0 @@
-/home/lex/lexWorkSpace/ftree/target/debug/ftree: /home/lex/lexWorkSpace/ftree/src/app.rs /home/lex/lexWorkSpace/ftree/src/clipboard.rs /home/lex/lexWorkSpace/ftree/src/config.rs /home/lex/lexWorkSpace/ftree/src/main.rs /home/lex/lexWorkSpace/ftree/src/templates.rs /home/lex/lexWorkSpace/ftree/src/tree.rs /home/lex/lexWorkSpace/ftree/src/ui.rs

@@ -10,6 +10,7 @@
 - 📋 **多选复制** - 选中多个文件后一次性复制路径
 - 🔧 **命令拼接** - 使用模板生成 ffmpeg/cat/tar/scp 等命令
 - 🖥️ **快速打开** - 一键打开终端或系统文件管理器
+- 🤖 **Claude Code yolo** - 快速启动 Claude Code yolo 模式
 - ⚙️ **可配置模板** - 自定义命令模板（~/.config/ftree/templates.toml）
 
 ## 安装
@@ -36,11 +37,11 @@ ff --hidden     # 显示隐藏文件
 
 ```
 ~/lexWorkSpace/                        ← 顶部状态栏
-▼ lexWorkSpace/                [复制] [cd] [终端] [打开]
-  ├─ docs/                     [复制] [cd] [终端] [打开]
-  ├─ video/a.mp4               [复制] [cd] [终端] [打开]
-  └─ install.sh                [复制] [cd] [终端] [打开]
-──────────────────────────────────────────────────────
+▼ lexWorkSpace/                [复制] [cd] [终端] [打开] [yolo]
+  ├─ docs/                     [复制] [cd] [终端] [打开] [yolo]
+  ├─ video/a.mp4               [复制] [cd] [终端] [打开] [yolo]
+  └─ install.sh                [复制] [cd] [终端] [打开] [yolo]
+──────────────────────────────────────────────────────────
 ↑/↓ 移动  [空格]选中  [c]复制  [C]拼接命令  [t]隐藏  [q]退出
 ```
 
@@ -57,6 +58,7 @@ ff --hidden     # 显示隐藏文件
 | `C` | 打开模板选择器，拼接命令 |
 | `t` | 显示/隐藏隐藏文件 |
 | `o` | 在当前目录打开系统终端 |
+| `y` | 在当前目录启动 Claude Code yolo 模式 |
 | `g` / `G` | 跳到顶部/底部 |
 | `q` / `Esc` | 退出 |
 
@@ -71,6 +73,7 @@ ff --hidden     # 显示隐藏文件
 | 点击 `[cd]` 按钮 | 复制 `cd <该行所在目录>` 命令 |
 | 点击 `[终端]` 按钮 | 在该目录打开系统终端 |
 | 点击 `[打开]` 按钮 | 在系统文件管理器中打开该目录 |
+| 点击 `[yolo]` 按钮 | 在该目录启动 Claude Code yolo 模式 |
 
 ## 功能详解
 
@@ -116,6 +119,19 @@ tar -czf archive.tar.gz file1 file2 file3
 - `{names}` - 仅文件名
 - `{dir}` - 选中文件的公共父目录
 - `{n}` - 文件数量
+
+### Claude Code yolo 模式
+
+按 `y` 或点击 `[yolo]` 按钮，会在当前目录打开一个新的终端窗口并自动启动 Claude Code 的 yolo 模式（`--dangerously-skip-permissions`）。
+
+这个模式下 Claude Code 会自动批准所有工具调用，适合快速迭代和批量操作场景。
+
+```bash
+# 等效命令：
+cd /selected/path && claude --dangerously-skip-permissions
+```
+
+**注意**：yolo 模式会让 Claude Code 无需确认就执行所有操作，请确保在受控环境中使用。
 
 ## 配置
 

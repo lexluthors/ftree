@@ -6,17 +6,19 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 use crate::tree::NodeKind;
 
-/// 右侧按钮区总宽（逻辑列）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 = 25
-pub const BTN_W: u16 = 25;
+/// 右侧按钮区总宽（逻辑列）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 = 32
+pub const BTN_W: u16 = 32;
 pub const BTN0_LEN: u16 = 6;
 pub const BTN1_LEN: u16 = 4;
 pub const BTN2_LEN: u16 = 6;
 pub const BTN3_LEN: u16 = 6;
+pub const BTN4_LEN: u16 = 6;
 
 const BTN0: &str = "[复制]";
 const BTN1: &str = "[cd]";
 const BTN2: &str = "[终端]";
 const BTN3: &str = "[打开]";
+const BTN4: &str = "[yolo]";
 
 const TOAST_SECS: u64 = 4;
 
@@ -165,6 +167,13 @@ fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize
         y,
         BTN3,
         BTN3_LEN as usize,
+        btn_style,
+    );
+    buf.set_stringn(
+        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1 + BTN2_LEN + 1 + BTN3_LEN + 1,
+        y,
+        BTN4,
+        BTN4_LEN as usize,
         btn_style,
     );
 }
