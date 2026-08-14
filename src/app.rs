@@ -1,3 +1,4 @@
+#[cfg(not(target_os = "macos"))]
 use std::env;
 use std::io;
 use std::path::PathBuf;
@@ -21,12 +22,17 @@ pub enum Mode {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum TermKind {
     Gnome,
     Konsole,
     Alacritty,
     Kitty,
     Xterm,
+    #[cfg(target_os = "macos")]
+    MacTerminal,
+    #[cfg(target_os = "macos")]
+    ITerm2,
     Custom,
 }
 
@@ -324,6 +330,30 @@ impl App {
             TermKind::Kitty => {
                 cmd.arg("-d").arg(&dir);
             }
+            #[cfg(target_os = "macos")]
+            TermKind::MacTerminal => {
+                // 使用 osascript 在 Terminal.app 中打开指定目录
+                // 先创建新窗口（使用默认 profile），再发送命令
+                let script = format!("cd {}", dir.to_string_lossy().replace('"', "\\\""));
+                cmd.arg("-e")
+                   .arg("tell application \"Terminal\"")
+                   .arg("-e")
+                   .arg("activate")
+                   .arg("-e")
+                   .arg("set newWindow to (do script \"\")")
+                   .arg("-e")
+                   .arg(format!("do script \"{}\" in newWindow", script.replace('"', "\\\"")))
+                   .arg("-e")
+                   .arg("end tell");
+            }
+            #[cfg(target_os = "macos")]
+            TermKind::ITerm2 => {
+                // 使用 osascript 在 iTerm2 中打开指定目录
+                cmd.arg("-e")
+                   .arg(format!("tell application \"iTerm2\" to create window with default profile command \"cd {}\"", dir.to_string_lossy().replace('"', "\\\"")))
+                   .arg("-e")
+                   .arg("tell application \"iTerm2\" to activate");
+            }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir); // 以该目录为工作目录启动
             }
@@ -335,7 +365,21 @@ impl App {
         }
     }
 
+    /// 在系统文件管理器中打开当前文件夹
+    #[cfg(target_os = "macos")]
+    fn open_file_manager(&mut self) {
+        let dir = self.tree.cursor_dir();
+        let mut cmd = Command::new("open");
+        cmd.arg(&dir);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已在文件管理器中打开 {}", dir.to_string_lossy())),
+            Err(e) => self.set_toast(format!("打开文件管理器失败: {e}")),
+        }
+    }
+
     /// 在系统文件管理器中打开当前文件夹（用 xdg-open 调起桌面默认应用）
+    #[cfg(not(target_os = "macos"))]
     fn open_file_manager(&mut self) {
         let dir = self.tree.cursor_dir();
         let mut cmd = Command::new("xdg-open");
@@ -368,6 +412,29 @@ impl App {
                 cmd.arg("-d").arg(&dir);
                 cmd.arg("claude --dangerously-skip-permissions");
             }
+            #[cfg(target_os = "macos")]
+            TermKind::MacTerminal => {
+                // 先打开新窗口（使用默认 profile），再发送命令
+                // 这样确保终端样式与正常打开一致
+                let script = format!("cd {} && claude --dangerously-skip-permissions", dir.to_string_lossy().replace('"', "\\\""));
+                cmd.arg("-e")
+                   .arg("tell application \"Terminal\"")
+                   .arg("-e")
+                   .arg("activate")
+                   .arg("-e")
+                   .arg("set newWindow to (do script \"\")")
+                   .arg("-e")
+                   .arg(format!("do script \"{}\" in newWindow", script.replace('"', "\\\"")))
+                   .arg("-e")
+                   .arg("end tell");
+            }
+            #[cfg(target_os = "macos")]
+            TermKind::ITerm2 => {
+                cmd.arg("-e")
+                   .arg(format!("tell application \"iTerm2\" to create window with default profile command \"cd {} && claude --dangerously-skip-permissions\"", dir.to_string_lossy().replace('"', "\\\"")))
+                   .arg("-e")
+                   .arg("tell application \"iTerm2\" to activate");
+            }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir);
                 cmd.arg("-e").arg("claude --dangerously-skip-permissions");
@@ -391,6 +458,33 @@ fn shell_quote_path(p: &std::path::Path) -> String {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn detect_terminal() -> Option<TermCmd> {
+    // macOS: 优先检测 iTerm2，否则使用系统自带的 Terminal.app
+    // 检查 iTerm2 是否安装（需要检查退出码是否为 0）
+    if let Ok(status) = Command::new("osascript")
+        .arg("-e")
+        .arg("id of application \"iTerm2\"")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        if status.success() {
+            return Some(TermCmd {
+                kind: TermKind::ITerm2,
+                name: "osascript".to_string(),
+            });
+        }
+    }
+    // 默认使用 Terminal.app
+    Some(TermCmd {
+        kind: TermKind::MacTerminal,
+        name: "osascript".to_string(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
 fn detect_terminal() -> Option<TermCmd> {
     if let Ok(t) = env::var("TERMINAL") {
         let name = t.trim().to_string();
@@ -436,7 +530,7 @@ mod tests {
     use crossterm::event::KeyCode;
     use std::sync::Mutex;
 
-    /// 剪贴板是 X11 全局共享资源，测试必须串行，否则互相覆盖。
+    /// 剪贴板是系统共享资源（X11 全局/系统剪贴板），测试必须串行，否则互相覆盖。
     static CLIP_LOCK: Mutex<()> = Mutex::new(());
 
     fn fixture() -> (std::path::PathBuf, App) {
@@ -455,6 +549,16 @@ mod tests {
         (d, app)
     }
 
+    /// 读取剪贴板内容（跨平台）
+    #[cfg(target_os = "macos")]
+    fn read_clipboard() -> String {
+        std::process::Command::new("pbpaste")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn read_clipboard() -> String {
         std::process::Command::new("xclip")
             .args(["-o", "-selection", "clipboard"])
