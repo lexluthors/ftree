@@ -237,6 +237,22 @@ impl Tree {
         self.scroll = self.scroll.min(max_scroll);
     }
 
+    /// 刷新：重新读取所有已展开目录的子项（用于检测外部新增/删除的文件）。
+    pub fn refresh(&mut self) {
+        fn reload_node(n: &mut Node, show_hidden: bool) {
+            if n.is_dir() && n.expanded {
+                n.loaded = false;
+                n.children.clear();
+                n.load_children(show_hidden);
+                for c in &mut n.children {
+                    reload_node(c, show_hidden);
+                }
+            }
+        }
+        reload_node(&mut self.root, self.show_hidden);
+        self.rebuild();
+    }
+
     /// 切换隐藏文件显示；重载整棵已展开树（保留展开状态）。
     pub fn flip_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;

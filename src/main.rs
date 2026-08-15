@@ -52,6 +52,7 @@ fn print_usage() {
     println!("  o                  在当前文件夹打开系统终端");
     println!("  y                  在当前文件夹启动 Claude Code yolo 模式");
     println!("  t                  显示/隐藏隐藏文件（默认显示）");
+    println!("  r                  刷新（重新读取已展开目录）");
     println!("  q / Esc            退出");
     println!();
     println!("模板配置: ~/.config/ftree/templates.toml（首次运行自动生成）");

@@ -83,7 +83,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             buf.set_stringn(
                 0,
                 bottom_y,
-                " ↑/↓ 移动  空格 选中  Enter 展开/收缩  c 复制路径  C 拼接命令  d 复制cd  o 打开终端  t 切换隐藏文件  q 退出 ",
+                " ↑/↓ 移动  空格 选中  Enter 展开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
                 area.width as usize,
                 Style::default().fg(Color::DarkGray),
             );

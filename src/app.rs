@@ -136,6 +136,10 @@ impl App {
             Mode::Browse => match key.code {
                 Char('q') | Esc => return true,
                 Char('t') => self.tree.flip_hidden(),
+                Char('r') => {
+                    self.tree.refresh();
+                    self.set_toast("已刷新");
+                }
                 Char('c') => self.copy_paths(),
                 Char('d') => self.copy_cd(),
                 Char('o') => self.open_terminal(),
