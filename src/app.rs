@@ -31,8 +31,6 @@ pub enum TermKind {
     Xterm,
     #[cfg(target_os = "macos")]
     MacTerminal,
-    #[cfg(target_os = "macos")]
-    ITerm2,
     Custom,
 }
 
@@ -346,17 +344,11 @@ impl App {
                    .arg("-e")
                    .arg("set newWindow to (do script \"\")")
                    .arg("-e")
+                   .arg("delay 0.3")
+                   .arg("-e")
                    .arg(format!("do script \"{}\" in newWindow", script.replace('"', "\\\"")))
                    .arg("-e")
                    .arg("end tell");
-            }
-            #[cfg(target_os = "macos")]
-            TermKind::ITerm2 => {
-                // 使用 osascript 在 iTerm2 中打开指定目录
-                cmd.arg("-e")
-                   .arg(format!("tell application \"iTerm2\" to create window with default profile command \"cd {}\"", dir.to_string_lossy().replace('"', "\\\"")))
-                   .arg("-e")
-                   .arg("tell application \"iTerm2\" to activate");
             }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir); // 以该目录为工作目录启动
@@ -418,8 +410,8 @@ impl App {
             }
             #[cfg(target_os = "macos")]
             TermKind::MacTerminal => {
-                // 先打开新窗口（使用默认 profile），再发送命令
-                // 这样确保终端样式与正常打开一致
+                // 先打开新窗口（使用默认 profile），等窗口完成初始化后再发送命令，
+                // 避免 Terminal.app GPU 合成器在窗口未就绪时渲染大量输出导致画面残影。
                 let script = format!("cd {} && claude --dangerously-skip-permissions", dir.to_string_lossy().replace('"', "\\\""));
                 cmd.arg("-e")
                    .arg("tell application \"Terminal\"")
@@ -428,16 +420,11 @@ impl App {
                    .arg("-e")
                    .arg("set newWindow to (do script \"\")")
                    .arg("-e")
+                   .arg("delay 0.3")
+                   .arg("-e")
                    .arg(format!("do script \"{}\" in newWindow", script.replace('"', "\\\"")))
                    .arg("-e")
                    .arg("end tell");
-            }
-            #[cfg(target_os = "macos")]
-            TermKind::ITerm2 => {
-                cmd.arg("-e")
-                   .arg(format!("tell application \"iTerm2\" to create window with default profile command \"cd {} && claude --dangerously-skip-permissions\"", dir.to_string_lossy().replace('"', "\\\"")))
-                   .arg("-e")
-                   .arg("tell application \"iTerm2\" to activate");
             }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir);
@@ -464,24 +451,7 @@ fn shell_quote_path(p: &std::path::Path) -> String {
 
 #[cfg(target_os = "macos")]
 fn detect_terminal() -> Option<TermCmd> {
-    // macOS: 优先检测 iTerm2，否则使用系统自带的 Terminal.app
-    // 检查 iTerm2 是否安装（需要检查退出码是否为 0）
-    if let Ok(status) = Command::new("osascript")
-        .arg("-e")
-        .arg("id of application \"iTerm2\"")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        if status.success() {
-            return Some(TermCmd {
-                kind: TermKind::ITerm2,
-                name: "osascript".to_string(),
-            });
-        }
-    }
-    // 默认使用 Terminal.app
+    // macOS: 使用系统自带的 Terminal.app
     Some(TermCmd {
         kind: TermKind::MacTerminal,
         name: "osascript".to_string(),
