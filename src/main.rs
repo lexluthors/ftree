@@ -39,7 +39,7 @@ fn print_usage() {
     println!("用法: ftree [选项] [目录]");
     println!();
     println!("选项:");
-    println!("  --hidden    默认显示隐藏文件");
+    println!("  --no-hidden 默认隐藏隐藏文件（默认显示）");
     println!("  -h, --help  显示本帮助");
     println!();
     println!("操作（键盘 / 鼠标）:");
@@ -51,7 +51,7 @@ fn print_usage() {
     println!("  d                  复制 cd <当前文件夹> 命令（粘贴后按 Enter 执行）");
     println!("  o                  在当前文件夹打开系统终端");
     println!("  y                  在当前文件夹启动 Claude Code yolo 模式");
-    println!("  t                  显示/隐藏隐藏文件");
+    println!("  t                  显示/隐藏隐藏文件（默认显示）");
     println!("  q / Esc            退出");
     println!();
     println!("模板配置: ~/.config/ftree/templates.toml（首次运行自动生成）");
@@ -64,7 +64,7 @@ fn main() {
         print_usage();
         return;
     }
-    let show_hidden = args.iter().any(|a| a == "--hidden");
+    let show_hidden = !args.iter().any(|a| a == "--no-hidden");
 
     let mut start = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     for a in &args {
