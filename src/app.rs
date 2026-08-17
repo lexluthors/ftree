@@ -407,23 +407,66 @@ impl App {
         }
     }
 
-    /// 在系统文件管理器中打开当前文件夹
+    /// 在系统文件管理器中打开并定位到当前文件或文件夹
     #[cfg(target_os = "macos")]
     fn open_file_manager(&mut self) {
-        let dir = self.tree.cursor_dir();
+        let node = self.tree.cursor_node();
+        let path = &node.path;
+
+        // 使用 open -R 在 Finder 中显示并选中文件/文件夹
         let mut cmd = Command::new("open");
-        cmd.arg(&dir);
+        cmd.arg("-R").arg(path);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
-            Ok(_) => self.set_toast(format!("已在文件管理器中打开 {}", dir.to_string_lossy())),
+            Ok(_) => self.set_toast(format!("已在 Finder 中定位 {}", path.to_string_lossy())),
             Err(e) => self.set_toast(format!("打开文件管理器失败: {e}")),
         }
     }
 
-    /// 在系统文件管理器中打开当前文件夹（用 xdg-open 调起桌面默认应用）
+    /// 在系统文件管理器中打开并定位到当前文件或文件夹
     #[cfg(not(target_os = "macos"))]
     fn open_file_manager(&mut self) {
-        let dir = self.tree.cursor_dir();
+        let node = self.tree.cursor_node();
+        let path = &node.path;
+
+        // 尝试使用支持 --select 的文件管理器
+        let file_managers = [
+            ("nautilus", vec!["--select".to_string(), path.to_string_lossy().to_string()]),
+            ("nemo", vec!["--select".to_string(), path.to_string_lossy().to_string()]),
+            ("dolphin", vec!["--select".to_string(), path.to_string_lossy().to_string()]),
+        ];
+
+        for (manager, args) in &file_managers {
+            if Command::new(manager)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok()
+            {
+                let mut cmd = Command::new(manager);
+                for arg in args {
+                    cmd.arg(arg);
+                }
+                cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                match cmd.spawn() {
+                    Ok(_) => {
+                        self.set_toast(format!("已在 {} 中定位 {}", manager, path.to_string_lossy()));
+                        return;
+                    }
+                    Err(_) => continue,
+                }
+            }
+        }
+
+        // 回退到 xdg-open（只打开文件夹，无法定位文件）
+        let dir = if node.is_dir() {
+            path.clone()
+        } else {
+            path.parent().unwrap_or(path).to_path_buf()
+        };
+
         let mut cmd = Command::new("xdg-open");
         cmd.arg(&dir);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
