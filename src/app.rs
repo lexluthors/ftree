@@ -19,6 +19,7 @@ use crate::ui::BTN_W;
 pub enum Mode {
     Browse,
     Picker,
+    GitMenu,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub enum TermKind {
     Custom,
 }
 
+#[derive(Clone)]
 pub struct TermCmd {
     pub kind: TermKind,
     pub name: String,
@@ -47,6 +49,7 @@ pub struct App {
     pub templates: Vec<Template>,
     pub toast: Option<(String, Instant)>,
     pub picker_index: usize,
+    pub git_menu_index: usize,
     pub hover: Option<(u16, u16)>,
     /// 最后一帧渲染时的终端尺寸（鼠标命中判断用）
     pub screen: (u16, u16),
@@ -65,6 +68,7 @@ impl App {
             templates: crate::config::load_templates(),
             toast: None,
             picker_index: 0,
+            git_menu_index: 0,
             hover: None,
             screen: (0, 0),
             root_display,
@@ -121,6 +125,15 @@ impl App {
         }
         use KeyCode::*;
         match self.mode {
+            Mode::GitMenu => match key.code {
+                Up | Char('k') => {
+                    self.git_menu_index = (self.git_menu_index + 3) % 4
+                }
+                Down | Char('j') => self.git_menu_index = (self.git_menu_index + 1) % 4,
+                Esc | Char('q') => self.mode = Mode::Browse,
+                Enter => self.git_menu_apply(),
+                _ => {}
+            },
             Mode::Picker => match key.code {
                 Up | Char('k') => {
                     self.picker_index =
@@ -201,13 +214,14 @@ impl App {
             let vis_row = row as usize - 1 + self.tree.scroll;
             if vis_row < self.tree.visible.len() {
                 self.tree.cursor = vis_row;
-                // 按钮热区：[复制]6 / 间隔1 / [cd]4 / 间隔1 / [终端]6 / 间隔1 / [打开]6 / 间隔1 / [yolo]6
+                // 按钮热区：[复制]6 / 间隔1 / [cd]4 / 间隔1 / [终端]6 / 间隔1 / [打开]6 / 间隔1 / [yolo]6 / 间隔1 / [Git]5
                 let btn = match off {
                     0..=5 => 0,     // [复制]
                     7..=10 => 1,    // [cd]
                     12..=17 => 2,   // [终端]
                     19..=24 => 3,   // [打开]
                     26..=31 => 4,   // [yolo]
+                    33..=37 => 5,   // [Git]
                     _ => return,    // 间隔区点击忽略
                 };
                 self.do_row_button(btn);
@@ -240,6 +254,7 @@ impl App {
             2 => self.open_terminal(),
             3 => self.open_file_manager(),
             4 => self.open_yolo(),
+            5 => self.open_git_menu(),
             _ => {}
         }
     }
@@ -435,6 +450,222 @@ impl App {
         match cmd.spawn() {
             Ok(_) => self.set_toast(format!("已在 {} 启动 Claude Code yolo 模式", dir.to_string_lossy())),
             Err(e) => self.set_toast(format!("启动 Claude Code 失败: {e}")),
+        }
+    }
+
+    // ---------- Git 操作 ----------
+
+    fn open_git_menu(&mut self) {
+        self.git_menu_index = 0;
+        self.mode = Mode::GitMenu;
+    }
+
+    fn git_menu_apply(&mut self) {
+        let dir = self.tree.cursor_dir();
+        let is_repo = crate::git::is_git_repo(&dir);
+
+        match self.git_menu_index {
+            0 => self.git_share(dir, is_repo),
+            1 => self.git_pull(dir, is_repo),
+            2 => self.git_commit(dir, is_repo),
+            3 => self.git_push(dir, is_repo),
+            _ => {}
+        }
+        self.mode = Mode::Browse;
+    }
+
+    fn git_share(&mut self, dir: std::path::PathBuf, is_repo: bool) {
+        if is_repo {
+            self.set_toast("已经是 git 仓库，无需 share");
+            return;
+        }
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+
+        // 构建 share 脚本
+        let script = r#"
+echo "=== Git Share on GitHub ==="
+echo ""
+
+# 检查是否已安装 git
+if ! command -v git &> /dev/null; then
+    echo "错误: 未安装 git，请先安装 git"
+    echo "按任意键退出..."
+    read -n1
+    exit 1
+fi
+
+# 初始化 git
+git init
+echo "✓ 已初始化 git 仓库"
+
+# 检测默认分支名
+BRANCH=$(git symbolic-ref HEAD 2>/dev/null | sed 's|refs/heads/||')
+if [ -z "$BRANCH" ]; then
+    BRANCH="master"
+fi
+echo "  默认分支: $BRANCH"
+
+# 提示输入 GitHub 仓库 URL
+echo ""
+echo "请输入 GitHub 仓库 URL (例如: git@github.com:user/repo.git):"
+echo "  或直接按 Enter 跳过 remote 配置"
+read -r REPO_URL
+
+if [ -n "$REPO_URL" ]; then
+    git remote add origin "$REPO_URL"
+    echo "✓ 已添加 remote origin: $REPO_URL"
+else
+    echo "跳过 remote 配置"
+fi
+
+# 首次 commit
+echo ""
+echo "请输入 commit 描述 (直接按 Enter 使用默认 'first commit'):"
+read -r MSG
+if [ -z "$MSG" ]; then
+    MSG="first commit"
+fi
+
+git add .
+git commit -m "$MSG"
+echo "✓ 已提交: $MSG"
+
+# Push
+if [ -n "$REPO_URL" ]; then
+    echo ""
+    echo "正在 push 到 $REPO_URL ..."
+    git push -u origin "$BRANCH"
+    if [ $? -eq 0 ]; then
+        echo "✓ push 成功"
+    else
+        echo "✗ push 失败，请检查网络和认证"
+    fi
+fi
+
+echo ""
+echo "完成！按任意键退出..."
+read -n1
+"#;
+
+        self.run_in_terminal(&term, &dir, script, "Git Share");
+    }
+
+    fn git_pull(&mut self, dir: std::path::PathBuf, is_repo: bool) {
+        if !is_repo {
+            self.set_toast("当前目录不是 git 仓库");
+            return;
+        }
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+
+        let script = r#"
+echo "=== Git Pull ==="
+echo ""
+git pull
+echo ""
+echo "完成！按任意键退出..."
+read -n1
+"#;
+
+        self.run_in_terminal(&term, &dir, script, "Git Pull");
+    }
+
+    fn git_commit(&mut self, dir: std::path::PathBuf, is_repo: bool) {
+        if !is_repo {
+            self.set_toast("当前目录不是 git 仓库");
+            return;
+        }
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+
+        // 获取当前可执行文件路径
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "ftree".to_string());
+
+        let script = format!(r#"
+echo "启动交互式 git commit..."
+"{}" --git-commit
+"#, exe);
+
+        self.run_in_terminal(&term, &dir, &script, "Git Commit");
+    }
+
+    fn git_push(&mut self, dir: std::path::PathBuf, is_repo: bool) {
+        if !is_repo {
+            self.set_toast("当前目录不是 git 仓库");
+            return;
+        }
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+
+        let script = r#"
+echo "=== Git Push ==="
+echo ""
+git push
+echo ""
+echo "完成！按任意键退出..."
+read -n1
+"#;
+
+        self.run_in_terminal(&term, &dir, script, "Git Push");
+    }
+
+    /// 在系统终端中执行脚本
+    fn run_in_terminal(&mut self, term: &TermCmd, dir: &std::path::Path, script: &str, label: &str) {
+        let mut cmd = Command::new(&term.name);
+        match term.kind {
+            TermKind::Gnome => {
+                cmd.arg("--working-directory").arg(dir);
+                cmd.arg("--").arg("bash").arg("-c").arg(script);
+            }
+            TermKind::Alacritty => {
+                cmd.arg("--working-directory").arg(dir);
+                cmd.arg("-e").arg("bash").arg("-c").arg(script);
+            }
+            TermKind::Konsole => {
+                cmd.arg("--workdir").arg(dir);
+                cmd.arg("-e").arg("bash").arg("-c").arg(script);
+            }
+            TermKind::Kitty => {
+                cmd.arg("-d").arg(dir);
+                cmd.arg("bash").arg("-c").arg(script);
+            }
+            #[cfg(target_os = "macos")]
+            TermKind::MacTerminal => {
+                let cd_script = format!("cd {}", dir.to_string_lossy().replace('"', "\\\""));
+                let full_script = format!("{} && {}", cd_script, script.replace('"', "\\\""));
+                cmd.arg("-e")
+                   .arg("tell application \"Terminal\"")
+                   .arg("-e")
+                   .arg("activate")
+                   .arg("-e")
+                   .arg("set newWindow to (do script \"\")")
+                   .arg("-e")
+                   .arg("delay 0.3")
+                   .arg("-e")
+                   .arg(format!("do script \"{}\" in newWindow", full_script))
+                   .arg("-e")
+                   .arg("end tell");
+            }
+            TermKind::Xterm | TermKind::Custom => {
+                cmd.current_dir(dir);
+                cmd.arg("-e").arg("bash").arg("-c").arg(script);
+            }
+        }
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已在终端打开 {}", label)),
+            Err(e) => self.set_toast(format!("打开终端失败: {e}")),
         }
     }
 }

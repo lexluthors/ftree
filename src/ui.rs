@@ -6,19 +6,21 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 use crate::tree::NodeKind;
 
-/// 右侧按钮区总宽（逻辑列）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 = 32
-pub const BTN_W: u16 = 32;
+/// 右侧按钮区总宽（逻辑列）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 + 间隔1 + [Git]5 = 38
+pub const BTN_W: u16 = 38;
 pub const BTN0_LEN: u16 = 6;
 pub const BTN1_LEN: u16 = 4;
 pub const BTN2_LEN: u16 = 6;
 pub const BTN3_LEN: u16 = 6;
 pub const BTN4_LEN: u16 = 6;
+pub const BTN5_LEN: u16 = 5;
 
 const BTN0: &str = "[复制]";
 const BTN1: &str = "[cd]";
 const BTN2: &str = "[终端]";
 const BTN3: &str = "[打开]";
 const BTN4: &str = "[yolo]";
+const BTN5: &str = "[Git]";
 
 const TOAST_SECS: u64 = 4;
 
@@ -93,6 +95,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // ---- 模板选择弹层 ----
     if app.mode == Mode::Picker {
         draw_picker(buf, app, area);
+    }
+
+    // ---- Git 操作菜单弹层 ----
+    if app.mode == Mode::GitMenu {
+        draw_git_menu(buf, app, area);
     }
 }
 
@@ -174,6 +181,13 @@ fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize
         y,
         BTN4,
         BTN4_LEN as usize,
+        btn_style,
+    );
+    buf.set_stringn(
+        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1 + BTN2_LEN + 1 + BTN3_LEN + 1 + BTN4_LEN + 1,
+        y,
+        BTN5,
+        BTN5_LEN as usize,
         btn_style,
     );
 }
@@ -258,6 +272,71 @@ fn draw_picker(buf: &mut Buffer, app: &App, area: Rect) {
         x + 1,
         y + h - 2,
         "↑/↓ 选择  Enter 复制并关闭  Esc 返回",
+        (w - 2) as usize,
+        Style::default().fg(Color::DarkGray),
+    );
+}
+
+fn draw_git_menu(buf: &mut Buffer, app: &App, area: Rect) {
+    let w = 40u16.min(area.width - 2);
+    let h = 10u16.min(area.height.saturating_sub(4));
+    let x = area.x + area.width / 2 - w / 2;
+    let y = area.y + area.height / 2 - h / 2;
+
+    // 清空弹层区域
+    for yy in y..y + h {
+        for xx in x..x + w {
+            buf[(xx, yy)].reset();
+        }
+    }
+
+    // 边框
+    let hline = "─".repeat((w - 2) as usize);
+    let style = Style::default().fg(Color::Cyan);
+    buf.set_string(x, y, &format!("┌{hline}┐"), style);
+    buf.set_string(x, y + h - 1, &format!("└{hline}┘"), style);
+    for yy in (y + 1)..(y + h - 1) {
+        let cell = buf.cell_mut((x, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+        let cell = buf.cell_mut((x + w - 1, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+    }
+
+    // 标题
+    let title = " Git 操作 ";
+    let tx = x + ((w as usize).saturating_sub(title.len() * 2) / 2) as u16;
+    buf.set_stringn(tx, y, title, w as usize, Style::default().add_modifier(Modifier::BOLD));
+
+    // 菜单选项
+    let options = [
+        "1. Share on GitHub",
+        "2. git pull",
+        "3. git commit",
+        "4. git push",
+    ];
+
+    for (i, opt) in options.iter().enumerate() {
+        if i as u16 >= h - 4 {
+            break;
+        }
+        let (sym, is_cur) = if i == app.git_menu_index {
+            ("▶ ", true)
+        } else {
+            ("  ", false)
+        };
+        let text = format!("{}{}", sym, opt);
+        let mut st = Style::default();
+        if is_cur {
+            st = st.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD);
+        }
+        buf.set_stringn(x + 1, y + 1 + i as u16, &text, (w - 2) as usize, st);
+    }
+
+    // 底部提示
+    buf.set_stringn(
+        x + 1,
+        y + h - 2,
+        "↑/↓ 选择  Enter 执行  Esc 返回",
         (w - 2) as usize,
         Style::default().fg(Color::DarkGray),
     );

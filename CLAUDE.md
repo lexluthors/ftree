@@ -103,3 +103,15 @@ Defaults are written on first run if the file doesn't exist.
 - **文件管理器**：macOS 用 `open`，Linux 用 `xdg-open`
 - **终端检测**：macOS 用 `osascript` 检测 iTerm2/Terminal.app，Linux 检测各终端命令
 - 测试中的剪贴板读取函数也按平台分别实现
+
+## 开发规范（强制）
+
+### 跨平台支持
+所有新增功能必须同时支持 **Linux** 和 **macOS** 两个平台。
+
+### 终端优先级
+优先使用系统自带的终端：
+- **macOS**: Terminal.app（优先） > iTerm2
+- **Linux**: 检测 `$TERMINAL` 环境变量，若未设置则按优先级尝试：gnome-terminal > konsole > alacritty > kitty > xterm
+
+实现时必须使用条件编译 `#[cfg(target_os = "...")]` 处理平台差异。
