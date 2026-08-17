@@ -78,7 +78,7 @@ fn run_inner(dir: &Path, stdout: &mut io::Stdout) -> io::Result<()> {
     let mut untracked_cursor: usize = 0;
     let mut stage = Stage::SelectFiles;
     let mut commit_message = String::new();
-    let mut action = CommitAction::CommitOnly;
+    let mut action = CommitAction::CommitAndPush;
 
     loop {
         // 渲染
@@ -263,12 +263,14 @@ fn handle_action_keys(key: KeyEvent, action: &mut CommitAction, stage: &mut Stag
         KeyCode::Esc => {
             *stage = Stage::InputMessage;
         }
-        KeyCode::Char('1') | KeyCode::Enter => {
+        KeyCode::Char('1') => {
             *action = CommitAction::CommitOnly;
-            *stage = Stage::Executing;
         }
         KeyCode::Char('2') => {
             *action = CommitAction::CommitAndPush;
+        }
+        KeyCode::Enter => {
+            // 使用当前选择的 action
             *stage = Stage::Executing;
         }
         _ => {}
@@ -496,14 +498,15 @@ fn render(
             write!(stdout, "\x1b[1;36m")?;
             write!(stdout, "\x1b[{};1H", y + 1)?;
             write!(stdout, " 选择操作: ")?;
+            // 高亮当前选择的选项
             let sel1 = if action == CommitAction::CommitOnly { "\x1b[7m" } else { "\x1b[0m" };
             let sel2 = if action == CommitAction::CommitAndPush { "\x1b[7m" } else { "\x1b[0m" };
-            write!(stdout, "{} 1. 仅 commit {}  ", sel1, "\x1b[0m")?;
-            write!(stdout, "{} 2. commit and push {}", sel2, "\x1b[0m")?;
+            write!(stdout, "{} 1. 仅 commit {}    ", sel1, "\x1b[0m")?;
+            write!(stdout, "{} 2. commit and push (默认) {}", sel2, "\x1b[0m")?;
             y += 1;
             write!(stdout, "\x1b[37m")?;
             write!(stdout, "\x1b[{};1H", y + 1)?;
-            write!(stdout, " 按 1/2 选择，Enter=确认，Esc=返回")?;
+            write!(stdout, " 按 1/2 切换，Enter=确认，Esc=返回")?;
         }
         Stage::Executing => {
             write!(stdout, "\x1b[1;32m")?;
@@ -595,9 +598,17 @@ fn execute_git_commit(
         }
     }
 
-    println!("\n按任意键退出...");
-    terminal::enable_raw_mode()?;
-    wait_for_key(&mut io::stdout())?;
+    // 显示提示并等待按键
+    println!("\n\x1b[37m按任意键退出...\x1b[0m");
+
+    // 使用 crossterm 读取按键
+    loop {
+        if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
+            if let Ok(Event::Key(_)) = event::read() {
+                break;
+            }
+        }
+    }
 
     Ok(())
 }

@@ -184,6 +184,10 @@ impl App {
                 if self.mode == Mode::Picker {
                     return; // 弹层用键盘操作
                 }
+                if self.mode == Mode::GitMenu {
+                    self.git_menu_mouse_click(col, row);
+                    return;
+                }
                 self.mouse_click(col, row);
             }
             MouseEventKind::ScrollUp => {
@@ -200,6 +204,33 @@ impl App {
             }
             MouseEventKind::Moved => self.hover = Some((col, row)),
             _ => {}
+        }
+    }
+
+    fn git_menu_mouse_click(&mut self, col: u16, row: u16) {
+        let (w, h) = self.screen;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        // Git 菜单的尺寸和位置（与 draw_git_menu 保持一致）
+        let menu_w = 40u16.min(w.saturating_sub(2));
+        let menu_h = 10u16.min(h.saturating_sub(4));
+        let menu_x = w / 2 - menu_w / 2;
+        let menu_y = h / 2 - menu_h / 2;
+
+        // 检查点击是否在菜单区域内
+        if col >= menu_x && col < menu_x + menu_w && row >= menu_y && row < menu_y + menu_h {
+            // 计算点击的是哪个菜单项（菜单项从 menu_y + 1 开始）
+            let item_row = row.saturating_sub(menu_y + 1);
+            if item_row < 4 {
+                // 有 4 个菜单项
+                self.git_menu_index = item_row as usize;
+                self.git_menu_apply();
+            }
+        } else {
+            // 点击菜单外部，关闭菜单
+            self.mode = Mode::Browse;
         }
     }
 
