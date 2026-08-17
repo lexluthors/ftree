@@ -552,9 +552,14 @@ fn execute_git_commit(
     message: &str,
     action: CommitAction,
 ) -> io::Result<()> {
-    // 退出 TUI 模式，回到普通终端
+    // 完全退出 TUI 模式
     terminal::disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen, cursor::Show)?;
+
+    // 清空事件队列，防止残留事件
+    while event::poll(std::time::Duration::from_millis(10))? {
+        let _ = event::read();
+    }
 
     println!("\x1b[1;36m执行 git commit...\x1b[0m\n");
 
@@ -598,15 +603,15 @@ fn execute_git_commit(
         }
     }
 
-    // 显示提示并等待按键
+    // 显示提示并等待按键 - 使用标准输入，不依赖 crossterm
     println!("\n\x1b[37m按任意键退出...\x1b[0m");
+    io::stdout().flush()?;
 
-    // 使用 crossterm 读取按键
+    // 使用 crossterm 等待按键（不使用 raw mode）
     loop {
-        if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
-            if let Ok(Event::Key(_)) = event::read() {
-                break;
-            }
+        match event::read() {
+            Ok(Event::Key(_)) | Ok(Event::Mouse(_)) => break,
+            _ => continue,
         }
     }
 
