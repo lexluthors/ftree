@@ -523,8 +523,8 @@ echo ""
 # 检查是否已安装 git
 if ! command -v git &> /dev/null; then
     echo "错误: 未安装 git，请先安装 git"
-    echo "按任意键退出..."
-    read -n1
+    echo "按 Enter 键退出..."
+    read
     exit 1
 fi
 
@@ -577,8 +577,8 @@ if [ -n "$REPO_URL" ]; then
 fi
 
 echo ""
-echo "完成！按任意键退出..."
-read -n1
+echo "完成！按 Enter 键退出..."
+read
 "#;
 
         self.run_in_terminal(&term, &dir, script, "Git Share");
@@ -599,8 +599,8 @@ echo "=== Git Pull ==="
 echo ""
 git pull
 echo ""
-echo "完成！按任意键退出..."
-read -n1
+echo "完成！按 Enter 键退出..."
+read
 "#;
 
         self.run_in_terminal(&term, &dir, script, "Git Pull");
@@ -644,8 +644,8 @@ echo "=== Git Push ==="
 echo ""
 git push
 echo ""
-echo "完成！按任意键退出..."
-read -n1
+echo "完成！按 Enter 键退出..."
+read
 "#;
 
         self.run_in_terminal(&term, &dir, script, "Git Push");
@@ -673,20 +673,39 @@ read -n1
             }
             #[cfg(target_os = "macos")]
             TermKind::MacTerminal => {
-                let cd_script = format!("cd {}", dir.to_string_lossy().replace('"', "\\\""));
-                let full_script = format!("{} && {}", cd_script, script.replace('"', "\\\""));
-                cmd.arg("-e")
-                   .arg("tell application \"Terminal\"")
-                   .arg("-e")
-                   .arg("activate")
-                   .arg("-e")
-                   .arg("set newWindow to (do script \"\")")
-                   .arg("-e")
-                   .arg("delay 0.3")
-                   .arg("-e")
-                   .arg(format!("do script \"{}\" in newWindow", full_script))
-                   .arg("-e")
-                   .arg("end tell");
+                // macOS Terminal.app: 将脚本写入临时文件，然后执行
+                use std::io::Write;
+                let temp_dir = std::env::temp_dir();
+                let script_file = temp_dir.join(format!("ftree-git-{}.sh", std::process::id()));
+
+                // 写入脚本到临时文件
+                if let Ok(mut file) = std::fs::File::create(&script_file) {
+                    let _ = file.write_all(b"#!/bin/bash\n");
+                    let _ = file.write_all(format!("cd '{}'\n", dir.to_string_lossy().replace('\'', "'\\''")).as_bytes());
+                    let _ = file.write_all(script.as_bytes());
+                    drop(file);
+
+                    // 设置执行权限
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&script_file, std::fs::Permissions::from_mode(0o755));
+                    }
+
+                    let script_path = script_file.to_string_lossy().replace('"', "\\\"");
+
+                    cmd.arg("-e")
+                       .arg("tell application \"Terminal\"")
+                       .arg("-e")
+                       .arg("activate")
+                       .arg("-e")
+                       .arg(format!("do script \"{}; rm -f '{}'; exit\"", script_path, script_path))
+                       .arg("-e")
+                       .arg("end tell");
+                } else {
+                    self.set_toast("无法创建临时脚本文件");
+                    return;
+                }
             }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(dir);
