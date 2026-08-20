@@ -558,73 +558,116 @@ impl App {
             return;
         };
 
-        // 构建 share 脚本
-        let script = r#"
-echo "=== Git Share on GitHub ==="
+        // 取目录名作为仓库名，清理非法字符（GitHub 仓库名只允许 字母/数字/-/_/.)
+        let raw_name = dir
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "repo".to_string());
+        let repo_name = raw_name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches(|c| c == '.' || c == '-')
+            .to_string();
+        let repo_name = if repo_name.is_empty() {
+            "repo".to_string()
+        } else {
+            repo_name
+        };
+
+        // 认证优先级：gh 已认证 → 环境变量 GH_TOKEN → 交互式输入 token
+        // push 协议优先级：本地有 SSH key → ssh；否则 → https
+        let script = format!(
+            r#"echo "=== Git Share on GitHub ==="
 echo ""
 
-# 检查是否已安装 git
-if ! command -v git &> /dev/null; then
-    echo "错误: 未安装 git，请先安装 git"
+# 1. 检查 gh CLI
+if ! command -v gh &> /dev/null; then
+    echo "✗ 未安装 GitHub CLI (gh)"
+    echo "  安装: sudo apt install gh"
+    echo "  或访问: https://cli.github.com/"
+    echo ""
     echo "按 Enter 键退出..."
     read
     exit 1
 fi
 
-# 初始化 git
-git init
+# 2. 认证检测
+if ! gh auth status &> /dev/null; then
+    if [ -n "$GH_TOKEN" ]; then
+        echo "✓ 使用环境变量 GH_TOKEN 认证"
+    else
+        echo "gh 未登录，请输入 GitHub Personal Access Token 进行认证"
+        echo "  获取 token: https://github.com/settings/tokens/new"
+        echo "  需要勾选的 scope: repo, read:org"
+        echo ""
+        echo -n "请粘贴 token (输入时不回显): "
+        read -s TOKEN
+        echo ""
+        if [ -z "$TOKEN" ]; then
+            echo "取消操作"
+            echo "按 Enter 键退出..."
+            read
+            exit 1
+        fi
+        echo "$TOKEN" | gh auth login --with-token > /dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo "✗ 认证失败，请检查 token 是否正确"
+            echo "按 Enter 键退出..."
+            read
+            exit 1
+        fi
+        echo "✓ 认证成功"
+    fi
+else
+    echo "✓ gh 已认证"
+fi
+
+# 3. 检测 SSH key，决定 push 协议
+if ls ~/.ssh/id_* 1> /dev/null 2>&1; then
+    gh config set git_protocol ssh > /dev/null 2>&1
+    echo "✓ 检测到 SSH key，使用 ssh 协议 push"
+else
+    gh config set git_protocol https > /dev/null 2>&1
+    echo "  未检测到 SSH key，使用 https 协议 push"
+fi
+
+# 4. 初始化 git
+git init -q
 echo "✓ 已初始化 git 仓库"
 
-# 检测默认分支名
-BRANCH=$(git symbolic-ref HEAD 2>/dev/null | sed 's|refs/heads/||')
-if [ -z "$BRANCH" ]; then
-    BRANCH="master"
-fi
-echo "  默认分支: $BRANCH"
-
-# 提示输入 GitHub 仓库 URL
-echo ""
-echo "请输入 GitHub 仓库 URL (例如: git@github.com:user/repo.git):"
-echo "  或直接按 Enter 跳过 remote 配置"
-read -r REPO_URL
-
-if [ -n "$REPO_URL" ]; then
-    git remote add origin "$REPO_URL"
-    echo "✓ 已添加 remote origin: $REPO_URL"
-else
-    echo "跳过 remote 配置"
-fi
-
-# 首次 commit
-echo ""
-echo "请输入 commit 描述 (直接按 Enter 使用默认 'first commit'):"
-read -r MSG
-if [ -z "$MSG" ]; then
-    MSG="first commit"
-fi
-
+# 5. 首次 commit
 git add .
-git commit -m "$MSG"
-echo "✓ 已提交: $MSG"
+git commit -q -m "first commit"
+echo "✓ 已提交"
 
-# Push
-if [ -n "$REPO_URL" ]; then
+# 6. 创建 GitHub 仓库并 push
+echo ""
+echo "正在创建 GitHub 仓库: {repo_name} (private)..."
+gh repo create "{repo_name}" --private --source=. --push
+
+if [ $? -eq 0 ]; then
+    REPO_URL=$(gh repo view --json url -q .url 2>/dev/null)
     echo ""
-    echo "正在 push 到 $REPO_URL ..."
-    git push -u origin "$BRANCH"
-    if [ $? -eq 0 ]; then
-        echo "✓ push 成功"
-    else
-        echo "✗ push 失败，请检查网络和认证"
-    fi
+    echo "✓ 创建成功: ${{REPO_URL:-{repo_name}}}"
+else
+    echo ""
+    echo "✗ 创建失败，请检查上方错误信息"
 fi
 
 echo ""
-echo "完成！按 Enter 键退出..."
+echo "按 Enter 键退出..."
 read
-"#;
+"#
+        );
 
-        self.run_in_terminal(&term, &dir, script, "Git Share");
+        self.run_in_terminal(&term, &dir, &script, "Git Share");
     }
 
     fn git_pull(&mut self, dir: std::path::PathBuf, is_repo: bool) {
