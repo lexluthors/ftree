@@ -354,7 +354,7 @@ impl App {
 
     fn copy_cd(&mut self) {
         let dir = self.tree.cursor_dir();
-        let cmd = format!("cd {}", shell_quote_path(&dir));
+        let cmd = format!("cd {} && cc", shell_quote_path(&dir));
         match self.clipboard.set(&cmd) {
             Ok(()) => self.set_toast(format!("已复制: {}（粘贴后按 Enter）", cmd)),
             Err(e) => self.set_toast(format!("复制失败: {e}")),
