@@ -778,7 +778,9 @@ read
         match term.kind {
             TermKind::Gnome => {
                 cmd.arg("--working-directory").arg(dir);
-                cmd.arg("--").arg("bash").arg("-c").arg(script);
+                // 使用 -e + 单字符串，与 open_yolo 保持一致（-- 多参数方式在部分版本不生效）
+                cmd.arg("-e").arg(format!("bash -c '{script}'",
+                    script = script.replace('\'', "'\\''")));
             }
             TermKind::Alacritty => {
                 cmd.arg("--working-directory").arg(dir);
