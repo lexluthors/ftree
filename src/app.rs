@@ -13,7 +13,7 @@ use crate::clipboard::Clipboard;
 use crate::config::Template;
 use crate::templates;
 use crate::tree::Tree;
-use crate::ui::BTN_W;
+use crate::ui::{BTN_W_BASE, BTN_W_SH};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -239,31 +239,48 @@ impl App {
         if w == 0 || h == 0 || row == 0 || row >= h.saturating_sub(1) {
             return; // 状态栏/底部栏点击忽略
         }
-        let btn_zone_start = w.saturating_sub(BTN_W);
+        let vis_row = row as usize - 1 + self.tree.scroll;
+        if vis_row >= self.tree.visible.len() {
+            return;
+        }
+        // 根据文件类型决定按钮区宽度（.sh 文件多一个 [运行] 按钮）
+        let chain = self.tree.visible[vis_row].clone();
+        let node = self.tree.node_at(&chain);
+        let is_sh = !node.is_dir() && node.path.extension().map_or(false, |e| e == "sh");
+        let btn_w = if is_sh { BTN_W_SH } else { BTN_W_BASE };
+        let btn_zone_start = w.saturating_sub(btn_w);
         if col >= btn_zone_start && col < w {
             let off = col - btn_zone_start;
-            let vis_row = row as usize - 1 + self.tree.scroll;
-            if vis_row < self.tree.visible.len() {
-                self.tree.cursor = vis_row;
-                // 按钮热区：[复制]6 / 间隔1 / [cd]4 / 间隔1 / [终端]6 / 间隔1 / [打开]6 / 间隔1 / [yolo]6 / 间隔1 / [Git]5
-                let btn = match off {
+            self.tree.cursor = vis_row;
+            // 按钮热区（.sh 文件多一个 [运行] 在最前）
+            let btn = if is_sh {
+                // [运行]5 / 1 / [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 44
+                match off {
+                    0..=4 => 6,     // [运行]
+                    6..=11 => 0,    // [复制]
+                    13..=16 => 1,   // [cd]
+                    18..=23 => 2,   // [终端]
+                    25..=30 => 3,   // [打开]
+                    32..=37 => 4,   // [yolo]
+                    39..=43 => 5,   // [Git]
+                    _ => return,
+                }
+            } else {
+                // [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 38
+                match off {
                     0..=5 => 0,     // [复制]
                     7..=10 => 1,    // [cd]
                     12..=17 => 2,   // [终端]
                     19..=24 => 3,   // [打开]
                     26..=31 => 4,   // [yolo]
                     33..=37 => 5,   // [Git]
-                    _ => return,    // 间隔区点击忽略
-                };
-                self.do_row_button(btn);
-            }
+                    _ => return,
+                }
+            };
+            self.do_row_button(btn);
             return;
         }
         // 树区点击：目录展开/收缩，文件选中
-        let vis_row = row as usize - 1 + self.tree.scroll;
-        if vis_row >= self.tree.visible.len() {
-            return;
-        }
         self.tree.cursor = vis_row;
         if self.tree.cursor_node().is_dir() {
             self.tree.toggle_cursor();
@@ -286,6 +303,7 @@ impl App {
             3 => self.open_file_manager(),
             4 => self.open_yolo(),
             5 => self.open_git_menu(),
+            6 => self.run_script(),
             _ => {}
         }
     }
@@ -525,6 +543,23 @@ impl App {
             Ok(_) => self.set_toast(format!("已在 {} 启动 Claude Code yolo 模式", dir.to_string_lossy())),
             Err(e) => self.set_toast(format!("启动 Claude Code 失败: {e}")),
         }
+    }
+
+    /// 在系统终端中运行当前 .sh 脚本，执行完毕后提示按任意键关闭
+    fn run_script(&mut self) {
+        let node = self.tree.cursor_node();
+        let path = node.path.clone();
+        let dir = path.parent().unwrap_or(&path).to_path_buf();
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+        let escaped = path.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "bash '{}'\necho \"\"\necho \"按任意键关闭...\"\nread -n 1",
+            escaped
+        );
+        self.run_in_terminal(&term, &dir, &script, "运行脚本");
     }
 
     // ---------- Git 操作 ----------

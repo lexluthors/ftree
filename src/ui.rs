@@ -6,14 +6,17 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 use crate::tree::NodeKind;
 
-/// 右侧按钮区总宽（逻辑列）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 + 间隔1 + [Git]5 = 38
-pub const BTN_W: u16 = 38;
+/// 右侧按钮区基础宽度（不含 [运行]）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 + 间隔1 + [Git]5 = 38
+pub const BTN_W_BASE: u16 = 38;
+/// 右侧按钮区宽度（含 [运行]，.sh 文件时）：38 + 间隔1 + [运行]5 = 44
+pub const BTN_W_SH: u16 = 44;
 pub const BTN0_LEN: u16 = 6;
 pub const BTN1_LEN: u16 = 4;
 pub const BTN2_LEN: u16 = 6;
 pub const BTN3_LEN: u16 = 6;
 pub const BTN4_LEN: u16 = 6;
 pub const BTN5_LEN: u16 = 5;
+pub const BTN6_LEN: u16 = 5;
 
 const BTN0: &str = "[复制]";
 const BTN1: &str = "[cd]";
@@ -21,6 +24,7 @@ const BTN2: &str = "[终端]";
 const BTN3: &str = "[打开]";
 const BTN4: &str = "[yolo]";
 const BTN5: &str = "[Git]";
+const BTN6: &str = "[运行]";
 
 const TOAST_SECS: u64 = 4;
 
@@ -28,7 +32,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     // 终端过小（含 0×0，如 script/管道 pty）：什么都不渲染。
     // 此时缓冲区可能没有可用单元，任何写入都会越界 panic。
-    if area.width < BTN_W + 10 || area.height < 4 {
+    if area.width < BTN_W_BASE + 10 || area.height < 4 {
         return;
     }
     app.screen = (area.width, area.height);
@@ -55,9 +59,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let view_h = (area.height - 2) as usize;
     app.tree.ensure_visible(view_h);
     let rows = app.tree.visible.len();
-    let btn_x = area.width.saturating_sub(BTN_W);
-    let text_w = btn_x.saturating_sub(1) as usize; // 树文本与按钮之间留 1 格间隔
-
     for vi in 0..view_h {
         let row = app.tree.scroll + vi;
         if row >= rows {
@@ -67,7 +68,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         if y >= bottom_y {
             break;
         }
-        render_row(buf, app, row, y, text_w, btn_x);
+        let chain = app.tree.visible[row].clone();
+        let node = app.tree.node_at(&chain);
+        let is_sh = !node.is_dir() && node.path.extension().map_or(false, |e| e == "sh");
+        let btn_w = if is_sh { BTN_W_SH } else { BTN_W_BASE };
+        let btn_x = area.width.saturating_sub(btn_w);
+        let text_w = btn_x.saturating_sub(1) as usize;
+        render_row(buf, app, row, y, text_w, btn_x, is_sh);
     }
 
     // ---- 底部状态栏（toast 或快捷键提示） ----
@@ -103,7 +110,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize, btn_x: u16) {
+fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize, btn_x: u16, is_sh: bool) {
     let chain = app.tree.visible[row].clone();
     let node = app.tree.node_at(&chain);
     let depth = chain.len(); // 根 = 0
@@ -160,36 +167,24 @@ fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    buf.set_stringn(btn_x, y, BTN0, BTN0_LEN as usize, btn_style);
-    buf.set_stringn(btn_x + BTN0_LEN + 1, y, BTN1, BTN1_LEN as usize, btn_style);
-    buf.set_stringn(
-        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1,
-        y,
-        BTN2,
-        BTN2_LEN as usize,
-        btn_style,
-    );
-    buf.set_stringn(
-        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1 + BTN2_LEN + 1,
-        y,
-        BTN3,
-        BTN3_LEN as usize,
-        btn_style,
-    );
-    buf.set_stringn(
-        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1 + BTN2_LEN + 1 + BTN3_LEN + 1,
-        y,
-        BTN4,
-        BTN4_LEN as usize,
-        btn_style,
-    );
-    buf.set_stringn(
-        btn_x + BTN0_LEN + 1 + BTN1_LEN + 1 + BTN2_LEN + 1 + BTN3_LEN + 1 + BTN4_LEN + 1,
-        y,
-        BTN5,
-        BTN5_LEN as usize,
-        btn_style,
-    );
+    if is_sh {
+        // .sh 文件：[运行]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
+        buf.set_stringn(btn_x, y, BTN6, BTN6_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 6, y, BTN0, BTN0_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 13, y, BTN1, BTN1_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 18, y, BTN2, BTN2_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 25, y, BTN3, BTN3_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 32, y, BTN4, BTN4_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 39, y, BTN5, BTN5_LEN as usize, btn_style);
+    } else {
+        // 非 .sh 文件：[复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 38
+        buf.set_stringn(btn_x, y, BTN0, BTN0_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 7, y, BTN1, BTN1_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 12, y, BTN2, BTN2_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 19, y, BTN3, BTN3_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 26, y, BTN4, BTN4_LEN as usize, btn_style);
+        buf.set_stringn(btn_x + 33, y, BTN5, BTN5_LEN as usize, btn_style);
+    }
 }
 
 fn draw_picker(buf: &mut Buffer, app: &App, area: Rect) {
