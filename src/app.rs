@@ -57,7 +57,12 @@ pub struct App {
     pub screen: (u16, u16),
     pub root_display: String,
     pub terminal: Option<TermCmd>,
+    /// 上一次左键按下（时间, 列, 行），用于双击检测
+    pub last_click: Option<(Instant, u16, u16)>,
 }
+
+/// 双击判定窗口：300ms 内同一单元格第二次按下视为双击
+const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(300);
 
 impl App {
     pub fn new(root: PathBuf, show_hidden: bool) -> Self {
@@ -76,6 +81,7 @@ impl App {
             screen: (0, 0),
             root_display,
             terminal: detect_terminal(),
+            last_click: None,
         }
     }
 
@@ -207,7 +213,17 @@ impl App {
                     self.action_menu_mouse_click(col, row);
                     return;
                 }
-                self.mouse_click(col, row);
+                // 双击检测：300ms 内同一单元格第二次按下。
+                // 判定为双击后清空 last_click，三连击会重新从单击开始计数。
+                let now = Instant::now();
+                let is_double = matches!(self.last_click, Some((t, c, r))
+                    if now.duration_since(t) <= DOUBLE_CLICK_WINDOW && c == col && r == row);
+                self.last_click = if is_double { None } else { Some((now, col, row)) };
+                if is_double {
+                    self.double_click(col, row);
+                } else {
+                    self.mouse_click(col, row);
+                }
             }
             MouseEventKind::ScrollUp => {
                 if self.mode == Mode::Browse {
@@ -286,6 +302,37 @@ impl App {
             self.tree.toggle_cursor();
         } else {
             self.toggle_selected();
+        }
+    }
+
+    /// 双击处理（仅文件行生效）：
+    /// - 文本类文件 → terax 打开（terax 的 single-instance 会自动弹出/置顶窗口）
+    /// - 其他文件 → 系统默认应用打开
+    /// 第一击已执行过单击动作（移动光标/切换选中），这里对选中做回滚，
+    /// 保证"双击打开"不改变选中状态。
+    fn double_click(&mut self, col: u16, row: u16) {
+        let (w, h) = self.screen;
+        if w == 0 || h == 0 || row == 0 || row >= h.saturating_sub(1) {
+            return; // 状态栏/底部栏忽略
+        }
+        if col >= w.saturating_sub(BTN_W) {
+            return; // 按钮热区忽略（第一击已触发按钮动作）
+        }
+        let vis_row = row as usize - 1 + self.tree.scroll;
+        if vis_row >= self.tree.visible.len() {
+            return;
+        }
+        self.tree.cursor = vis_row;
+        if self.tree.cursor_node().is_dir() {
+            return; // 第一击已展开/收缩，无额外动作
+        }
+        // 回滚第一击的选中切换（toggle 自反）
+        self.toggle_selected();
+        let path = self.tree.cursor_node().path.clone();
+        if is_text_file(&path) {
+            self.open_with_terax(&path);
+        } else {
+            self.open_with_default_app(&path);
         }
     }
 
@@ -560,6 +607,49 @@ impl App {
             escaped
         );
         self.run_in_terminal(&term, &dir, &script, "运行脚本");
+    }
+
+    // ---------- 双击打开 ----------
+
+    /// 用 terax 编辑器打开文本文件。
+    /// terax 内置 single-instance：已运行时转发文件给现有实例（开新标签并自动
+    /// show + set_focus 弹出/置顶窗口）；未运行时直接新建主窗口。
+    fn open_with_terax(&mut self, path: &std::path::Path) {
+        let Some(bin) = terax_binary() else {
+            self.set_toast("未找到 terax，无法打开文件");
+            return;
+        };
+        let mut cmd = Command::new(bin);
+        cmd.arg(path);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已用 terax 打开 {}", file_name_display(path))),
+            Err(e) => self.set_toast(format!("terax 启动失败: {e}")),
+        }
+    }
+
+    /// 非文本文件：用系统默认应用打开（Linux: xdg-open）
+    #[cfg(not(target_os = "macos"))]
+    fn open_with_default_app(&mut self, path: &std::path::Path) {
+        let mut cmd = Command::new("xdg-open");
+        cmd.arg(path);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已用默认应用打开 {}", file_name_display(path))),
+            Err(e) => self.set_toast(format!("打开失败: {e}")),
+        }
+    }
+
+    /// 非文本文件：用系统默认应用打开（macOS: open）
+    #[cfg(target_os = "macos")]
+    fn open_with_default_app(&mut self, path: &std::path::Path) {
+        let mut cmd = Command::new("open");
+        cmd.arg(path);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已用默认应用打开 {}", file_name_display(path))),
+            Err(e) => self.set_toast(format!("打开失败: {e}")),
+        }
     }
 
     // ---------- Git 操作 ----------
@@ -898,6 +988,124 @@ fn shell_quote_path(p: &std::path::Path) -> String {
     }
 }
 
+/// 文件名（用于 toast 显示）
+fn file_name_display(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// 在 PATH 中查找可执行文件
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file())
+    })
+}
+
+/// 查找 terax 可执行文件（Linux：PATH）
+#[cfg(not(target_os = "macos"))]
+fn terax_binary() -> Option<String> {
+    find_in_path("terax").map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 查找 terax 可执行文件（macOS：PATH → .app 内置二进制）
+#[cfg(target_os = "macos")]
+fn terax_binary() -> Option<String> {
+    if let Some(p) = find_in_path("terax") {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    let mut candidates = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(home).join("Applications/Terax.app/Contents/MacOS/terax"));
+    }
+    candidates.push(PathBuf::from("/Applications/Terax.app/Contents/MacOS/terax"));
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 常见二进制后缀：直接判否，不做内容探测
+const BINARY_EXTS: &[&str] = &[
+    // 视频/音频（注意：不能收录 ts——与 TypeScript 冲突，文本优先）
+    "mp4", "mkv", "avi", "mov", "flv", "wmv", "webm", "m4v", "mpg", "mpeg",
+    "mp3", "wav", "flac", "aac", "ogg", "m4a", "wma",
+    // 图片/字体
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif", "heic", "avif",
+    "ttf", "otf", "woff", "woff2",
+    // 文档/压缩/可执行
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    "zip", "tar", "gz", "bz2", "xz", "zst", "7z", "rar", "deb", "rpm", "dmg", "iso",
+    "exe", "dll", "so", "dylib", "bin", "class", "jar", "apk", "aab", "dex", "o", "a",
+    "wasm", "pyc", "sqlite", "db",
+];
+
+/// 文本类文件白名单（编程语言 + 标记/配置 + 纯文本）
+const TEXT_EXTS: &[&str] = &[
+    // 编程语言
+    "rs", "py", "js", "mjs", "cjs", "jsx", "ts", "tsx", "go", "java", "kt", "kts",
+    "c", "h", "cpp", "hpp", "cc", "cxx", "cs", "rb", "php", "swift", "dart",
+    "sh", "bash", "zsh", "fish", "ps1", "lua", "pl", "r", "scala", "groovy",
+    "vue", "svelte",
+    // 标记/配置（含 markdown）
+    "md", "markdown", "rst", "html", "htm", "css", "scss", "less", "json", "jsonc",
+    "toml", "yaml", "yml", "xml", "ini", "cfg", "conf", "properties", "env",
+    "sql", "graphql", "proto", "dockerfile",
+    // 纯文本/日志
+    "txt", "log", "csv", "tsv", "lock",
+];
+
+/// 无扩展名时按文件名识别的常见文本文件（小写比较）
+const TEXT_NAMES: &[&str] = &[
+    "makefile", "dockerfile", "license", "readme", "changelog", "authors", "notice",
+    ".gitignore", ".gitattributes", ".gitmodules", ".env", ".editorconfig",
+];
+
+/// 判断是否文本类文件（双击时用 terax 打开）：
+/// ① 扩展名白名单（编程语言/标记配置/markdown/纯文本）
+/// ② 无扩展名的常见文件名（Makefile、.gitignore 等）
+/// ③ 常见二进制后缀直接排除
+/// ④ 兜底：读首 8KB，无 NUL 字节视为文本（UTF-16 BOM 特判）
+fn is_text_file(path: &std::path::Path) -> bool {
+    let fname = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if TEXT_NAMES.contains(&fname.as_str()) {
+        return true;
+    }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_l = ext.to_lowercase();
+        if TEXT_EXTS.contains(&ext_l.as_str()) {
+            return true;
+        }
+        if BINARY_EXTS.contains(&ext_l.as_str()) {
+            return false;
+        }
+    }
+    looks_like_text(path)
+}
+
+/// 内容探测：读首 8KB，无 NUL 字节视为文本；空文件视为文本。
+fn looks_like_text(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 8192];
+    let Ok(n) = f.read(&mut buf) else {
+        return false;
+    };
+    let data = &buf[..n];
+    // UTF-16 BOM（内容含大量 NUL，但确实是文本）
+    if data.len() >= 2 && (data[..2] == [0xFF, 0xFE] || data[..2] == [0xFE, 0xFF]) {
+        return true;
+    }
+    !data.contains(&0)
+}
+
 #[cfg(target_os = "macos")]
 fn detect_terminal() -> Option<TermCmd> {
     // macOS: 使用系统自带的 Terminal.app
@@ -1043,5 +1251,74 @@ mod tests {
             read_clipboard(),
             expect
         );
+    }
+
+    /// 模拟一次左键按下
+    fn click(app: &mut App, col: u16, row: u16) {
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn single_click_file_toggles_selection() {
+        let (_d, mut app) = fixture();
+        app.screen = (80, 24);
+        // 可见行: root(0), a.mp4(1), b.mp4(2)；屏幕行 = vis_row + 1
+        assert!(app.selected.is_empty());
+        click(&mut app, 2, 2); // 单击 a.mp4
+        assert_eq!(app.selected.len(), 1);
+    }
+
+    #[test]
+    fn double_click_dir_keeps_expanded() {
+        let (d, mut app) = fixture();
+        let sub = d.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("inner.txt"), b"hi").unwrap();
+        app.tree.refresh();
+        app.screen = (80, 24);
+        // 可见行: root, sub, a.mp4, b.mp4
+        assert_eq!(app.tree.visible.len(), 4);
+        click(&mut app, 2, 2); // 第一击：展开 sub
+        assert_eq!(app.tree.visible.len(), 5);
+        click(&mut app, 2, 2); // 300ms 内第二击 → 双击：目录行无额外动作
+        assert_eq!(app.tree.visible.len(), 5, "双击不应把目录收缩回去");
+    }
+
+    #[test]
+    fn text_file_detection() {
+        let d = std::env::temp_dir().join(format!(
+            "ftree-test-text-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("main.rs"), b"fn main() {}").unwrap();
+        std::fs::write(d.join("app.ts"), b"export {}").unwrap();
+        std::fs::write(d.join("README.md"), b"# hi").unwrap();
+        std::fs::write(d.join("Makefile"), b"all:").unwrap();
+        std::fs::write(d.join(".gitignore"), b"target").unwrap();
+        std::fs::write(d.join("data.unkext"), b"plain text").unwrap();
+        std::fs::write(d.join("blob.unkext"), b"\x00\x01\x02\x03").unwrap();
+
+        // 编程语言（含 ts——不得与 MPEG-TS 混淆）/ markdown / 无扩展名文本文件
+        assert!(is_text_file(&d.join("main.rs")));
+        assert!(is_text_file(&d.join("app.ts")));
+        assert!(is_text_file(&d.join("README.md")));
+        assert!(is_text_file(&d.join("Makefile")));
+        assert!(is_text_file(&d.join(".gitignore")));
+        // 未知扩展名走内容探测
+        assert!(is_text_file(&d.join("data.unkext")));
+        assert!(!is_text_file(&d.join("blob.unkext")), "含 NUL 应判为二进制");
+        // 二进制后缀直接排除
+        assert!(!is_text_file(&d.join("video.mp4")));
+        assert!(!is_text_file(&d.join("photo.png")));
     }
 }
