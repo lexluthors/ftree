@@ -6,25 +6,23 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 use crate::tree::NodeKind;
 
-/// 右侧按钮区基础宽度（不含 [运行]）：[复制]6 + 间隔1 + [cd]4 + 间隔1 + [终端]6 + 间隔1 + [打开]6 + 间隔1 + [yolo]6 + 间隔1 + [Git]5 = 38
-pub const BTN_W_BASE: u16 = 38;
-/// 右侧按钮区宽度（含 [运行]，.sh 文件时）：38 + 间隔1 + [运行]5 = 44
-pub const BTN_W_SH: u16 = 44;
-pub const BTN0_LEN: u16 = 6;
-pub const BTN1_LEN: u16 = 4;
-pub const BTN2_LEN: u16 = 6;
-pub const BTN3_LEN: u16 = 6;
-pub const BTN4_LEN: u16 = 6;
-pub const BTN5_LEN: u16 = 5;
-pub const BTN6_LEN: u16 = 5;
+/// 右侧按钮区总宽：[操作]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
+pub const BTN_W: u16 = 44;
+pub const BTN0_LEN: u16 = 5;  // [操作]
+pub const BTN1_LEN: u16 = 6;  // [复制]
+pub const BTN2_LEN: u16 = 4;  // [cd]
+pub const BTN3_LEN: u16 = 6;  // [终端]
+pub const BTN4_LEN: u16 = 6;  // [打开]
+pub const BTN5_LEN: u16 = 6;  // [yolo]
+pub const BTN6_LEN: u16 = 5;  // [Git]
 
-const BTN0: &str = "[复制]";
-const BTN1: &str = "[cd]";
-const BTN2: &str = "[终端]";
-const BTN3: &str = "[打开]";
-const BTN4: &str = "[yolo]";
-const BTN5: &str = "[Git]";
-const BTN6: &str = "[运行]";
+const BTN0: &str = "[操作]";
+const BTN1: &str = "[复制]";
+const BTN2: &str = "[cd]";
+const BTN3: &str = "[终端]";
+const BTN4: &str = "[打开]";
+const BTN5: &str = "[yolo]";
+const BTN6: &str = "[Git]";
 
 const TOAST_SECS: u64 = 4;
 
@@ -32,7 +30,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let area = f.area();
     // 终端过小（含 0×0，如 script/管道 pty）：什么都不渲染。
     // 此时缓冲区可能没有可用单元，任何写入都会越界 panic。
-    if area.width < BTN_W_BASE + 10 || area.height < 4 {
+    if area.width < BTN_W + 10 || area.height < 4 {
         return;
     }
     app.screen = (area.width, area.height);
@@ -59,6 +57,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let view_h = (area.height - 2) as usize;
     app.tree.ensure_visible(view_h);
     let rows = app.tree.visible.len();
+    let btn_x = area.width.saturating_sub(BTN_W);
+    let text_w = btn_x.saturating_sub(1) as usize;
     for vi in 0..view_h {
         let row = app.tree.scroll + vi;
         if row >= rows {
@@ -68,13 +68,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         if y >= bottom_y {
             break;
         }
-        let chain = app.tree.visible[row].clone();
-        let node = app.tree.node_at(&chain);
-        let is_sh = !node.is_dir() && node.path.extension().map_or(false, |e| e == "sh");
-        let btn_w = if is_sh { BTN_W_SH } else { BTN_W_BASE };
-        let btn_x = area.width.saturating_sub(btn_w);
-        let text_w = btn_x.saturating_sub(1) as usize;
-        render_row(buf, app, row, y, text_w, btn_x, is_sh);
+        render_row(buf, app, row, y, text_w, btn_x);
     }
 
     // ---- 底部状态栏（toast 或快捷键提示） ----
@@ -108,9 +102,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mode == Mode::GitMenu {
         draw_git_menu(buf, app, area);
     }
+
+    // ---- 操作菜单弹层 ----
+    if app.mode == Mode::ActionMenu {
+        draw_action_menu(buf, app, area);
+    }
 }
 
-fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize, btn_x: u16, is_sh: bool) {
+fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize, btn_x: u16) {
     let chain = app.tree.visible[row].clone();
     let node = app.tree.node_at(&chain);
     let depth = chain.len(); // 根 = 0
@@ -161,30 +160,19 @@ fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize
 
     buf.set_stringn(0, y, &text, text_w, style);
 
-    // 行右侧按钮
+    // 行右侧按钮：[操作]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
     let btn_style = if is_cursor || hovered {
         Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    if is_sh {
-        // .sh 文件：[运行]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
-        buf.set_stringn(btn_x, y, BTN6, BTN6_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 6, y, BTN0, BTN0_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 13, y, BTN1, BTN1_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 18, y, BTN2, BTN2_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 25, y, BTN3, BTN3_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 32, y, BTN4, BTN4_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 39, y, BTN5, BTN5_LEN as usize, btn_style);
-    } else {
-        // 非 .sh 文件：[复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 38
-        buf.set_stringn(btn_x, y, BTN0, BTN0_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 7, y, BTN1, BTN1_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 12, y, BTN2, BTN2_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 19, y, BTN3, BTN3_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 26, y, BTN4, BTN4_LEN as usize, btn_style);
-        buf.set_stringn(btn_x + 33, y, BTN5, BTN5_LEN as usize, btn_style);
-    }
+    buf.set_stringn(btn_x, y, BTN0, BTN0_LEN as usize, btn_style);       // [操作]
+    buf.set_stringn(btn_x + 6, y, BTN1, BTN1_LEN as usize, btn_style);   // [复制]
+    buf.set_stringn(btn_x + 13, y, BTN2, BTN2_LEN as usize, btn_style);  // [cd]
+    buf.set_stringn(btn_x + 18, y, BTN3, BTN3_LEN as usize, btn_style);  // [终端]
+    buf.set_stringn(btn_x + 25, y, BTN4, BTN4_LEN as usize, btn_style);  // [打开]
+    buf.set_stringn(btn_x + 32, y, BTN5, BTN5_LEN as usize, btn_style);  // [yolo]
+    buf.set_stringn(btn_x + 39, y, BTN6, BTN6_LEN as usize, btn_style);  // [Git]
 }
 
 fn draw_picker(buf: &mut Buffer, app: &App, area: Rect) {
@@ -315,6 +303,65 @@ fn draw_git_menu(buf: &mut Buffer, app: &App, area: Rect) {
             break;
         }
         let (sym, is_cur) = if i == app.git_menu_index {
+            ("▶ ", true)
+        } else {
+            ("  ", false)
+        };
+        let text = format!("{}{}", sym, opt);
+        let mut st = Style::default();
+        if is_cur {
+            st = st.bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD);
+        }
+        buf.set_stringn(x + 1, y + 1 + i as u16, &text, (w - 2) as usize, st);
+    }
+
+    // 底部提示
+    buf.set_stringn(
+        x + 1,
+        y + h - 2,
+        "↑/↓ 选择  Enter 执行  Esc 返回",
+        (w - 2) as usize,
+        Style::default().fg(Color::DarkGray),
+    );
+}
+
+fn draw_action_menu(buf: &mut Buffer, app: &App, area: Rect) {
+    let w = 40u16.min(area.width - 2);
+    let options = App::action_menu_options();
+    let h = (options.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let x = area.x + area.width / 2 - w / 2;
+    let y = area.y + area.height / 2 - h / 2;
+
+    // 清空弹层区域
+    for yy in y..y + h {
+        for xx in x..x + w {
+            buf[(xx, yy)].reset();
+        }
+    }
+
+    // 边框
+    let hline = "─".repeat((w - 2) as usize);
+    let style = Style::default().fg(Color::Cyan);
+    buf.set_string(x, y, &format!("┌{hline}┐"), style);
+    buf.set_string(x, y + h - 1, &format!("└{hline}┘"), style);
+    for yy in (y + 1)..(y + h - 1) {
+        let cell = buf.cell_mut((x, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+        let cell = buf.cell_mut((x + w - 1, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+    }
+
+    // 标题
+    let title = " 操作 ";
+    let tx = x + ((w as usize).saturating_sub(title.len() * 2) / 2) as u16;
+    buf.set_stringn(tx, y, title, w as usize, Style::default().add_modifier(Modifier::BOLD));
+
+    // 菜单选项
+    for (i, opt) in options.iter().enumerate() {
+        if i as u16 >= h - 4 {
+            break;
+        }
+        let (sym, is_cur) = if i == app.action_menu_index {
             ("▶ ", true)
         } else {
             ("  ", false)

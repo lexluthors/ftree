@@ -13,13 +13,14 @@ use crate::clipboard::Clipboard;
 use crate::config::Template;
 use crate::templates;
 use crate::tree::Tree;
-use crate::ui::{BTN_W_BASE, BTN_W_SH};
+use crate::ui::BTN_W;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Browse,
     Picker,
     GitMenu,
+    ActionMenu,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +51,7 @@ pub struct App {
     pub toast: Option<(String, Instant)>,
     pub picker_index: usize,
     pub git_menu_index: usize,
+    pub action_menu_index: usize,
     pub hover: Option<(u16, u16)>,
     /// 最后一帧渲染时的终端尺寸（鼠标命中判断用）
     pub screen: (u16, u16),
@@ -69,6 +71,7 @@ impl App {
             toast: None,
             picker_index: 0,
             git_menu_index: 0,
+            action_menu_index: 0,
             hover: None,
             screen: (0, 0),
             root_display,
@@ -125,6 +128,18 @@ impl App {
         }
         use KeyCode::*;
         match self.mode {
+            Mode::ActionMenu => {
+                let n = Self::action_menu_options().len();
+                match key.code {
+                    Up | Char('k') => {
+                        self.action_menu_index = (self.action_menu_index + n - 1) % n
+                    }
+                    Down | Char('j') => self.action_menu_index = (self.action_menu_index + 1) % n,
+                    Esc | Char('q') => self.mode = Mode::Browse,
+                    Enter => self.action_menu_apply(),
+                    _ => {}
+                }
+            }
             Mode::GitMenu => match key.code {
                 Up | Char('k') => {
                     self.git_menu_index = (self.git_menu_index + 3) % 4
@@ -188,6 +203,10 @@ impl App {
                     self.git_menu_mouse_click(col, row);
                     return;
                 }
+                if self.mode == Mode::ActionMenu {
+                    self.action_menu_mouse_click(col, row);
+                    return;
+                }
                 self.mouse_click(col, row);
             }
             MouseEventKind::ScrollUp => {
@@ -243,39 +262,20 @@ impl App {
         if vis_row >= self.tree.visible.len() {
             return;
         }
-        // 根据文件类型决定按钮区宽度（.sh 文件多一个 [运行] 按钮）
-        let chain = self.tree.visible[vis_row].clone();
-        let node = self.tree.node_at(&chain);
-        let is_sh = !node.is_dir() && node.path.extension().map_or(false, |e| e == "sh");
-        let btn_w = if is_sh { BTN_W_SH } else { BTN_W_BASE };
-        let btn_zone_start = w.saturating_sub(btn_w);
+        let btn_zone_start = w.saturating_sub(BTN_W);
         if col >= btn_zone_start && col < w {
             let off = col - btn_zone_start;
             self.tree.cursor = vis_row;
-            // 按钮热区（.sh 文件多一个 [运行] 在最前）
-            let btn = if is_sh {
-                // [运行]5 / 1 / [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 44
-                match off {
-                    0..=4 => 6,     // [运行]
-                    6..=11 => 0,    // [复制]
-                    13..=16 => 1,   // [cd]
-                    18..=23 => 2,   // [终端]
-                    25..=30 => 3,   // [打开]
-                    32..=37 => 4,   // [yolo]
-                    39..=43 => 5,   // [Git]
-                    _ => return,
-                }
-            } else {
-                // [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 38
-                match off {
-                    0..=5 => 0,     // [复制]
-                    7..=10 => 1,    // [cd]
-                    12..=17 => 2,   // [终端]
-                    19..=24 => 3,   // [打开]
-                    26..=31 => 4,   // [yolo]
-                    33..=37 => 5,   // [Git]
-                    _ => return,
-                }
+            // 按钮热区：[操作]5 / 1 / [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 44
+            let btn = match off {
+                0..=4 => 0,     // [操作]
+                6..=11 => 1,    // [复制]
+                13..=16 => 2,   // [cd]
+                18..=23 => 3,   // [终端]
+                25..=30 => 4,   // [打开]
+                32..=37 => 5,   // [yolo]
+                39..=43 => 6,   // [Git]
+                _ => return,    // 间隔区点击忽略
             };
             self.do_row_button(btn);
             return;
@@ -291,19 +291,19 @@ impl App {
 
     fn do_row_button(&mut self, btn: usize) {
         match btn {
-            0 => {
+            0 => self.open_action_menu(),
+            1 => {
                 let p = self.tree.cursor_node().path.clone();
                 match self.clipboard.set(&p.to_string_lossy()) {
                     Ok(()) => self.set_toast(format!("已复制路径: {}", p.to_string_lossy())),
                     Err(e) => self.set_toast(format!("复制失败: {e}")),
                 }
             }
-            1 => self.copy_cd(),
-            2 => self.open_terminal(),
-            3 => self.open_file_manager(),
-            4 => self.open_yolo(),
-            5 => self.open_git_menu(),
-            6 => self.run_script(),
+            2 => self.copy_cd(),
+            3 => self.open_terminal(),
+            4 => self.open_file_manager(),
+            5 => self.open_yolo(),
+            6 => self.open_git_menu(),
             _ => {}
         }
     }
@@ -839,6 +839,51 @@ read
         match cmd.spawn() {
             Ok(_) => self.set_toast(format!("已在终端打开 {}", label)),
             Err(e) => self.set_toast(format!("打开终端失败: {e}")),
+        }
+    }
+
+    // ---------- 操作菜单 ----------
+
+    /// 操作菜单选项列表（后续新增功能直接加到这里）
+    pub fn action_menu_options() -> Vec<&'static str> {
+        vec![
+            "1. 运行脚本",
+        ]
+    }
+
+    fn open_action_menu(&mut self) {
+        self.action_menu_index = 0;
+        self.mode = Mode::ActionMenu;
+    }
+
+    fn action_menu_apply(&mut self) {
+        match self.action_menu_index {
+            0 => self.run_script(),
+            _ => {}
+        }
+        self.mode = Mode::Browse;
+    }
+
+    fn action_menu_mouse_click(&mut self, col: u16, row: u16) {
+        let (w, h) = self.screen;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let options = Self::action_menu_options();
+        let menu_w = 40u16.min(w.saturating_sub(2));
+        let menu_h = (options.len() as u16 + 4).min(h.saturating_sub(4));
+        let menu_x = w / 2 - menu_w / 2;
+        let menu_y = h / 2 - menu_h / 2;
+
+        if col >= menu_x && col < menu_x + menu_w && row >= menu_y && row < menu_y + menu_h {
+            let item_row = row.saturating_sub(menu_y + 1);
+            if (item_row as usize) < options.len() {
+                self.action_menu_index = item_row as usize;
+                self.action_menu_apply();
+            }
+        } else {
+            self.mode = Mode::Browse;
         }
     }
 }
