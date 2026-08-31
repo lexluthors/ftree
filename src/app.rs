@@ -934,10 +934,63 @@ read
 
     // ---------- 操作菜单 ----------
 
+    /// 删除当前光标所指的文件或文件夹（递归删除）。
+    /// 删除后对父目录做局部刷新，保留其他节点的展开/收缩状态。
+    fn delete_current(&mut self) {
+        let node = self.tree.cursor_node();
+        let path = node.path.clone();
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+
+        // 不允许删除根目录
+        if path == self.tree.root.path {
+            self.set_toast("无法删除根目录");
+            return;
+        }
+
+        // 计算父目录的索引链（当前行的 chain 去掉最后一项）
+        let cursor_chain = self.tree.visible.get(self.tree.cursor).cloned().unwrap_or_default();
+        let parent_chain = if cursor_chain.is_empty() {
+            // 根目录本身无父级，不应走到这里（上面已拦截），保险起见
+            Vec::new()
+        } else {
+            cursor_chain[..cursor_chain.len() - 1].to_vec()
+        };
+
+        // 执行删除
+        let result = if node.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+
+        match result {
+            Ok(()) => {
+                self.set_toast(format!("已删除: {name}"));
+                // 从选中列表中移除该路径及其所有子路径（若是目录）
+                self.selected.retain(|s| !s.starts_with(&path));
+                // 局部刷新父目录
+                self.tree.refresh_node(&parent_chain);
+                // 光标回退到有效范围
+                if self.tree.visible.is_empty() {
+                    self.tree.cursor = 0;
+                } else if self.tree.cursor >= self.tree.visible.len() {
+                    self.tree.cursor = self.tree.visible.len() - 1;
+                }
+            }
+            Err(e) => {
+                self.set_toast(format!("删除失败: {e}"));
+            }
+        }
+    }
+
     /// 操作菜单选项列表（后续新增功能直接加到这里）
     pub fn action_menu_options() -> Vec<&'static str> {
         vec![
             "1. 运行脚本",
+            "2. 删除",
         ]
     }
 
@@ -949,6 +1002,7 @@ read
     fn action_menu_apply(&mut self) {
         match self.action_menu_index {
             0 => self.run_script(),
+            1 => self.delete_current(),
             _ => {}
         }
         self.mode = Mode::Browse;

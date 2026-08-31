@@ -253,6 +253,28 @@ impl Tree {
         self.rebuild();
     }
 
+    /// 局部刷新：重新读取指定祖先链对应目录的子项（不触碰其他展开节点）。
+    /// `ancestor_chain` 为待刷新目录的索引链（空链 = 根目录）。
+    pub fn refresh_node(&mut self, ancestor_chain: &[usize]) {
+        fn reload(n: &mut Node, chain: &[usize], depth: usize, show_hidden: bool) {
+            if depth < chain.len() {
+                let idx = chain[depth];
+                if let Some(child) = n.children.get_mut(idx) {
+                    reload(child, chain, depth + 1, show_hidden);
+                }
+                return;
+            }
+            // 到达目标目录：重载子项
+            if n.is_dir() {
+                n.loaded = false;
+                n.children.clear();
+                n.load_children(show_hidden);
+            }
+        }
+        reload(&mut self.root, ancestor_chain, 0, self.show_hidden);
+        self.rebuild();
+    }
+
     /// 切换隐藏文件显示；重载整棵已展开树（保留展开状态）。
     pub fn flip_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
