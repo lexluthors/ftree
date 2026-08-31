@@ -71,25 +71,41 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         render_row(buf, app, row, y, text_w, btn_x);
     }
 
-    // ---- 底部状态栏（toast 或快捷键提示） ----
-    match &app.toast {
-        Some((msg, ts)) if ts.elapsed().as_secs() < TOAST_SECS => {
-            buf.set_stringn(
-                0,
-                bottom_y,
-                &format!(" {msg}"),
-                area.width as usize,
-                Style::default().fg(Color::Yellow),
-            );
+    // ---- 删除确认条（覆盖 toast/快捷键提示区） ----
+    if let Some((_, name, _)) = &app.pending_delete {
+        let msg = format!(" 确认删除「{name}」？ [y/Enter 确认，其他键取消] ");
+        let mut display = msg;
+        if display.len() > area.width as usize {
+            display.truncate(area.width as usize);
         }
-        _ => {
-            buf.set_stringn(
-                0,
-                bottom_y,
-                " ↑/↓ 移动  空格 选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
-                area.width as usize,
-                Style::default().fg(Color::DarkGray),
-            );
+        buf.set_stringn(
+            0,
+            bottom_y,
+            &display,
+            area.width as usize,
+            Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD),
+        );
+    } else {
+        // ---- 底部状态栏（toast 或快捷键提示） ----
+        match &app.toast {
+            Some((msg, ts)) if ts.elapsed().as_secs() < TOAST_SECS => {
+                buf.set_stringn(
+                    0,
+                    bottom_y,
+                    &format!(" {msg}"),
+                    area.width as usize,
+                    Style::default().fg(Color::Yellow),
+                );
+            }
+            _ => {
+                buf.set_stringn(
+                    0,
+                    bottom_y,
+                    " ↑/↓ 移动  空格 选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
+                    area.width as usize,
+                    Style::default().fg(Color::DarkGray),
+                );
+            }
         }
     }
 

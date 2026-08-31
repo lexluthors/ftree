@@ -59,6 +59,8 @@ pub struct App {
     pub terminal: Option<TermCmd>,
     /// 上一次左键按下（时间, 列, 行），用于双击检测
     pub last_click: Option<(Instant, u16, u16)>,
+    /// 待删除确认：存储 (路径, 显示名, 父目录链)
+    pub pending_delete: Option<(PathBuf, String, Vec<usize>)>,
 }
 
 /// 双击判定窗口：300ms 内同一单元格第二次按下视为双击
@@ -82,6 +84,7 @@ impl App {
             root_display,
             terminal: detect_terminal(),
             last_click: None,
+            pending_delete: None,
         }
     }
 
@@ -165,7 +168,19 @@ impl App {
                 Enter => self.picker_apply(),
                 _ => {}
             },
-            Mode::Browse => match key.code {
+            Mode::Browse => {
+                // 删除确认态：只有 y/Enter 确认，其他键一律取消
+                if self.pending_delete.is_some() {
+                    match key.code {
+                        Char('y') | Enter => self.confirm_delete(),
+                        _ => {
+                            self.pending_delete = None;
+                            self.set_toast("已取消删除");
+                        }
+                    }
+                    return false;
+                }
+                match key.code {
                 Char('q') | Esc => return true,
                 Char('t') => self.tree.flip_hidden(),
                 Char('r') => {
@@ -187,7 +202,8 @@ impl App {
                 Enter | Right | Char('l') => self.tree.toggle_cursor(),
                 Left | Backspace | Char('h') => self.tree.collapse_up(),
                 _ => {}
-            },
+            }
+            }
         }
         false
     }
@@ -270,6 +286,12 @@ impl App {
     }
 
     fn mouse_click(&mut self, col: u16, row: u16) {
+        // 删除确认态下，点击取消确认
+        if self.pending_delete.is_some() {
+            self.pending_delete = None;
+            self.set_toast("已取消删除");
+            return;
+        }
         let (w, h) = self.screen;
         if w == 0 || h == 0 || row == 0 || row >= h.saturating_sub(1) {
             return; // 状态栏/底部栏点击忽略
@@ -934,8 +956,7 @@ read
 
     // ---------- 操作菜单 ----------
 
-    /// 删除当前光标所指的文件或文件夹（递归删除）。
-    /// 删除后对父目录做局部刷新，保留其他节点的展开/收缩状态。
+    /// 删除当前光标所指的文件或文件夹：进入二次确认状态。
     fn delete_current(&mut self) {
         let node = self.tree.cursor_node();
         let path = node.path.clone();
@@ -953,27 +974,31 @@ read
         // 计算父目录的索引链（当前行的 chain 去掉最后一项）
         let cursor_chain = self.tree.visible.get(self.tree.cursor).cloned().unwrap_or_default();
         let parent_chain = if cursor_chain.is_empty() {
-            // 根目录本身无父级，不应走到这里（上面已拦截），保险起见
             Vec::new()
         } else {
             cursor_chain[..cursor_chain.len() - 1].to_vec()
         };
 
-        // 执行删除
-        let result = if node.is_dir() {
+        self.pending_delete = Some((path, name, parent_chain));
+    }
+
+    /// 确认删除：执行实际删除，局部刷新父目录，保留其他展开/收缩状态。
+    fn confirm_delete(&mut self) {
+        let (path, name, parent_chain) = match self.pending_delete.take() {
+            Some(v) => v,
+            None => return,
+        };
+        let is_dir = path.is_dir();
+        let result = if is_dir {
             std::fs::remove_dir_all(&path)
         } else {
             std::fs::remove_file(&path)
         };
-
         match result {
             Ok(()) => {
                 self.set_toast(format!("已删除: {name}"));
-                // 从选中列表中移除该路径及其所有子路径（若是目录）
                 self.selected.retain(|s| !s.starts_with(&path));
-                // 局部刷新父目录
                 self.tree.refresh_node(&parent_chain);
-                // 光标回退到有效范围
                 if self.tree.visible.is_empty() {
                     self.tree.cursor = 0;
                 } else if self.tree.cursor >= self.tree.visible.len() {
