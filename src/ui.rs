@@ -6,9 +6,8 @@ use ratatui::Frame;
 use crate::app::{App, Mode};
 use crate::tree::NodeKind;
 
-/// 右侧按钮区总宽：[操作]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
-pub const BTN_W: u16 = 44;
-pub const BTN0_LEN: u16 = 5;  // [操作]
+/// 右侧按钮区总宽：[复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 39
+pub const BTN_W: u16 = 39;
 pub const BTN1_LEN: u16 = 6;  // [复制]
 pub const BTN2_LEN: u16 = 4;  // [cd]
 pub const BTN3_LEN: u16 = 6;  // [终端]
@@ -16,7 +15,6 @@ pub const BTN4_LEN: u16 = 6;  // [打开]
 pub const BTN5_LEN: u16 = 6;  // [yolo]
 pub const BTN6_LEN: u16 = 5;  // [Git]
 
-const BTN0: &str = "[操作]";
 const BTN1: &str = "[复制]";
 const BTN2: &str = "[cd]";
 const BTN3: &str = "[终端]";
@@ -74,15 +72,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // ---- 删除确认条（覆盖 toast/快捷键提示区） ----
     if let Some((_, name, _)) = &app.pending_delete {
         let msg = format!(" 确认删除「{name}」？ [y/Enter 确认，其他键取消] ");
-        let mut display = msg;
-        if display.len() > area.width as usize {
-            display.truncate(area.width as usize);
-        }
+        // 按显示宽度截断，避免在多字节字符中间截断导致 panic
+        let max_width = area.width as usize;
+        let display = truncate_to_width(&msg, max_width);
         buf.set_stringn(
             0,
             bottom_y,
             &display,
-            area.width as usize,
+            max_width,
             Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD),
         );
     } else {
@@ -176,19 +173,18 @@ fn render_row(buf: &mut Buffer, app: &mut App, row: usize, y: u16, text_w: usize
 
     buf.set_stringn(0, y, &text, text_w, style);
 
-    // 行右侧按钮：[操作]5 + 1 + [复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 44
+    // 行右侧按钮：[复制]6 + 1 + [cd]4 + 1 + [终端]6 + 1 + [打开]6 + 1 + [yolo]6 + 1 + [Git]5 = 39
     let btn_style = if is_cursor || hovered {
         Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    buf.set_stringn(btn_x, y, BTN0, BTN0_LEN as usize, btn_style);       // [操作]
-    buf.set_stringn(btn_x + 6, y, BTN1, BTN1_LEN as usize, btn_style);   // [复制]
-    buf.set_stringn(btn_x + 13, y, BTN2, BTN2_LEN as usize, btn_style);  // [cd]
-    buf.set_stringn(btn_x + 18, y, BTN3, BTN3_LEN as usize, btn_style);  // [终端]
-    buf.set_stringn(btn_x + 25, y, BTN4, BTN4_LEN as usize, btn_style);  // [打开]
-    buf.set_stringn(btn_x + 32, y, BTN5, BTN5_LEN as usize, btn_style);  // [yolo]
-    buf.set_stringn(btn_x + 39, y, BTN6, BTN6_LEN as usize, btn_style);  // [Git]
+    buf.set_stringn(btn_x, y, BTN1, BTN1_LEN as usize, btn_style);        // [复制]
+    buf.set_stringn(btn_x + 7, y, BTN2, BTN2_LEN as usize, btn_style);    // [cd]
+    buf.set_stringn(btn_x + 12, y, BTN3, BTN3_LEN as usize, btn_style);   // [终端]
+    buf.set_stringn(btn_x + 19, y, BTN4, BTN4_LEN as usize, btn_style);   // [打开]
+    buf.set_stringn(btn_x + 26, y, BTN5, BTN5_LEN as usize, btn_style);   // [yolo]
+    buf.set_stringn(btn_x + 33, y, BTN6, BTN6_LEN as usize, btn_style);   // [Git]
 }
 
 fn draw_picker(buf: &mut Buffer, app: &App, area: Rect) {
@@ -407,6 +403,21 @@ fn title_width(s: &str) -> usize {
 /// 简易 unicode 显示宽度：ASCII 1 格，其余按 2 格。
 fn unicode_width(s: &str) -> usize {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
+
+/// 按显示宽度截断字符串，避免在多字节字符中间截断。
+fn truncate_to_width(s: &str, max_width: usize) -> String {
+    let mut result = String::new();
+    let mut width = 0;
+    for ch in s.chars() {
+        let ch_width = if ch.is_ascii() { 1 } else { 2 };
+        if width + ch_width > max_width {
+            break;
+        }
+        result.push(ch);
+        width += ch_width;
+    }
+    result
 }
 
 /// 中间截断：保留前/后半段，中间用省略号。

@@ -132,9 +132,6 @@ impl App {
     // ---------- 键盘 ----------
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
-        if std::env::var("FTREE_EVENT_LOG").is_ok() {
-            eprintln!("KEY: {:?}", key);
-        }
         use KeyCode::*;
         match self.mode {
             Mode::ActionMenu => {
@@ -211,9 +208,6 @@ impl App {
     // ---------- 鼠标 ----------
 
     pub fn handle_mouse(&mut self, m: MouseEvent) {
-        if std::env::var("FTREE_EVENT_LOG").is_ok() {
-            eprintln!("MOUSE: col={} row={} kind={:?}", m.column, m.row, m.kind);
-        }
         let (col, row) = (m.column, m.row);
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
@@ -240,6 +234,23 @@ impl App {
                 } else {
                     self.mouse_click(col, row);
                 }
+            }
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.hover = Some((col, row));
+                if self.mode != Mode::Browse {
+                    return; // 非浏览模式下忽略右键
+                }
+                // 右键在树区：打开操作菜单
+                let (w, h) = self.screen;
+                if w == 0 || h == 0 || row == 0 || row >= h.saturating_sub(1) {
+                    return; // 状态栏/底部栏忽略
+                }
+                let vis_row = row as usize - 1 + self.tree.scroll;
+                if vis_row >= self.tree.visible.len() {
+                    return;
+                }
+                self.tree.cursor = vis_row;
+                self.open_action_menu();
             }
             MouseEventKind::ScrollUp => {
                 if self.mode == Mode::Browse {
@@ -304,15 +315,14 @@ impl App {
         if col >= btn_zone_start && col < w {
             let off = col - btn_zone_start;
             self.tree.cursor = vis_row;
-            // 按钮热区：[操作]5 / 1 / [复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 44
+            // 按钮热区：[复制]6 / 1 / [cd]4 / 1 / [终端]6 / 1 / [打开]6 / 1 / [yolo]6 / 1 / [Git]5 = 39
             let btn = match off {
-                0..=4 => 0,     // [操作]
-                6..=11 => 1,    // [复制]
-                13..=16 => 2,   // [cd]
-                18..=23 => 3,   // [终端]
-                25..=30 => 4,   // [打开]
-                32..=37 => 5,   // [yolo]
-                39..=43 => 6,   // [Git]
+                0..=5 => 1,     // [复制]
+                7..=10 => 2,    // [cd]
+                12..=17 => 3,   // [终端]
+                19..=24 => 4,   // [打开]
+                26..=31 => 5,   // [yolo]
+                33..=38 => 6,   // [Git]
                 _ => return,    // 间隔区点击忽略
             };
             self.do_row_button(btn);
@@ -360,7 +370,6 @@ impl App {
 
     fn do_row_button(&mut self, btn: usize) {
         match btn {
-            0 => self.open_action_menu(),
             1 => {
                 let p = self.tree.cursor_node().path.clone();
                 match self.clipboard.set(&p.to_string_lossy()) {
