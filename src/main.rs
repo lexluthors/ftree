@@ -41,9 +41,9 @@ fn print_usage() {
     println!("用法: ftree [选项] [目录]");
     println!();
     println!("选项:");
-    println!("  --no-hidden    默认隐藏隐藏文件（默认显示）");
-    println!("  --git-commit   启动交互式 git commit 文件选择器（子命令）");
-    println!("  -h, --help     显示本帮助");
+    println!("  --hidden         显示隐藏文件（默认隐藏）");
+    println!("  --git-commit     启动交互式 git commit 文件选择器（子命令）");
+    println!("  -h, --help       显示本帮助");
     println!();
     println!("操作（键盘 / 鼠标）:");
     println!("  ↑ ↓ / j k          移动光标          点击目录行    展开/收缩");
@@ -54,7 +54,7 @@ fn print_usage() {
     println!("  d                  复制 cd <当前文件夹> 命令（粘贴后按 Enter 执行）");
     println!("  o                  在当前文件夹打开系统终端");
     println!("  y                  在当前文件夹启动 Claude Code yolo 模式");
-    println!("  t                  显示/隐藏隐藏文件（默认显示）");
+    println!("  t                  显示/隐藏隐藏文件（默认隐藏）");
     println!("  r                  刷新（重新读取已展开目录）");
     println!("  q / Esc            退出");
     println!();
@@ -83,7 +83,7 @@ fn main() {
         return;
     }
 
-    let show_hidden = !args.iter().any(|a| a == "--no-hidden");
+    let show_hidden = args.iter().any(|a| a == "--hidden");
 
     let mut start = env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     for a in &args {

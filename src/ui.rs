@@ -69,40 +69,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         render_row(buf, app, row, y, text_w, btn_x);
     }
 
-    // ---- 删除确认条（覆盖 toast/快捷键提示区） ----
-    if let Some((_, name, _)) = &app.pending_delete {
-        let msg = format!(" 确认删除「{name}」？ [y/Enter 确认，其他键取消] ");
-        // 按显示宽度截断，避免在多字节字符中间截断导致 panic
-        let max_width = area.width as usize;
-        let display = truncate_to_width(&msg, max_width);
-        buf.set_stringn(
-            0,
-            bottom_y,
-            &display,
-            max_width,
-            Style::default().bg(Color::Red).fg(Color::White).add_modifier(Modifier::BOLD),
-        );
-    } else {
-        // ---- 底部状态栏（toast 或快捷键提示） ----
-        match &app.toast {
-            Some((msg, ts)) if ts.elapsed().as_secs() < TOAST_SECS => {
-                buf.set_stringn(
-                    0,
-                    bottom_y,
-                    &format!(" {msg}"),
-                    area.width as usize,
-                    Style::default().fg(Color::Yellow),
-                );
-            }
-            _ => {
-                buf.set_stringn(
-                    0,
-                    bottom_y,
-                    " ↑/↓ 移动  空格 选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
-                    area.width as usize,
-                    Style::default().fg(Color::DarkGray),
-                );
-            }
+    // ---- 底部状态栏（toast 或快捷键提示） ----
+    match &app.toast {
+        Some((msg, ts)) if ts.elapsed().as_secs() < TOAST_SECS => {
+            buf.set_stringn(
+                0,
+                bottom_y,
+                &format!(" {msg}"),
+                area.width as usize,
+                Style::default().fg(Color::Yellow),
+            );
+        }
+        _ => {
+            buf.set_stringn(
+                0,
+                bottom_y,
+                " ↑/↓ 移动  空格 选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
+                area.width as usize,
+                Style::default().fg(Color::DarkGray),
+            );
         }
     }
 
@@ -119,6 +104,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // ---- 操作菜单弹层 ----
     if app.mode == Mode::ActionMenu {
         draw_action_menu(buf, app, area);
+    }
+
+    // ---- 删除确认弹层 ----
+    if app.pending_delete.is_some() {
+        draw_delete_confirm(buf, app, area);
     }
 }
 
@@ -396,12 +386,81 @@ fn draw_action_menu(buf: &mut Buffer, app: &App, area: Rect) {
     );
 }
 
+/// 删除确认弹窗：居中显示，包含文件名和 [是]/[否] 按钮
+fn draw_delete_confirm(buf: &mut Buffer, app: &App, area: Rect) {
+    let (w, h) = (40u16.min(area.width.saturating_sub(2)), 7u16.min(area.height.saturating_sub(2)));
+    let x = area.x + area.width / 2 - w / 2;
+    let y = area.y + area.height / 2 - h / 2;
+
+    // 清空弹层区域
+    for yy in y..y + h {
+        for xx in x..x + w {
+            buf[(xx, yy)].reset();
+        }
+    }
+
+    // 边框
+    let hline = "─".repeat((w - 2) as usize);
+    let style = Style::default().fg(Color::Red);
+    buf.set_string(x, y, &format!("┌{hline}┐"), style);
+    buf.set_string(x, y + h - 1, &format!("└{hline}┘"), style);
+    for yy in (y + 1)..(y + h - 1) {
+        let cell = buf.cell_mut((x, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+        let cell = buf.cell_mut((x + w - 1, yy)).unwrap();
+        cell.set_symbol("│").set_style(style);
+    }
+
+    // 标题
+    let title = " 确认删除 ";
+    let tx = x + ((w as usize).saturating_sub(title.len() * 2) / 2) as u16;
+    buf.set_stringn(tx, y, title, w as usize, Style::default().add_modifier(Modifier::BOLD));
+
+    // 文件名（截断处理）
+    let (_, name, _) = app.pending_delete.as_ref().unwrap();
+    let name_msg = format!("确定要删除「{name}」吗？");
+    let max_name_w = (w - 4) as usize;
+    let display_name = if unicode_width(&name_msg) > max_name_w {
+        truncate_to_width(&name_msg, max_name_w) + "…"
+    } else {
+        name_msg
+    };
+    buf.set_stringn(
+        x + 2,
+        y + 2,
+        &display_name,
+        max_name_w,
+        Style::default().fg(Color::White),
+    );
+
+    // [是] [否] 按钮
+    let yes_btn = "[ 是 ]";
+    let no_btn = "[ 否 ]";
+    let btn_total_w = 14; // 6 + 2 + 6
+    let btn_x = x + (w - btn_total_w as u16) / 2;
+
+    buf.set_stringn(
+        btn_x,
+        y + 4,
+        yes_btn,
+        6,
+        Style::default().bg(Color::Green).fg(Color::White).add_modifier(Modifier::BOLD),
+    );
+    buf.set_stringn(
+        btn_x + 8,
+        y + 4,
+        no_btn,
+        6,
+        Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD),
+    );
+}
+
 fn title_width(s: &str) -> usize {
     unicode_width(s)
 }
 
 /// 简易 unicode 显示宽度：ASCII 1 格，其余按 2 格。
-fn unicode_width(s: &str) -> usize {
+pub fn unicode_width(s: &str) -> usize {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
 }
 

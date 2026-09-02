@@ -223,6 +223,11 @@ impl App {
                     self.action_menu_mouse_click(col, row);
                     return;
                 }
+                // 删除确认弹窗：鼠标点击处理
+                if self.pending_delete.is_some() {
+                    self.delete_confirm_mouse_click(col, row);
+                    return;
+                }
                 // 双击检测：300ms 内同一单元格第二次按下。
                 // 判定为双击后清空 last_click，三连击会重新从单击开始计数。
                 let now = Instant::now();
@@ -297,12 +302,6 @@ impl App {
     }
 
     fn mouse_click(&mut self, col: u16, row: u16) {
-        // 删除确认态下，点击取消确认
-        if self.pending_delete.is_some() {
-            self.pending_delete = None;
-            self.set_toast("已取消删除");
-            return;
-        }
         let (w, h) = self.screen;
         if w == 0 || h == 0 || row == 0 || row >= h.saturating_sub(1) {
             return; // 状态栏/底部栏点击忽略
@@ -1063,6 +1062,49 @@ read
         } else {
             self.mode = Mode::Browse;
         }
+    }
+
+    /// 删除确认弹窗的鼠标点击处理：
+    /// 弹窗布局（与 ui.rs draw_delete_confirm 保持一致）：
+    /// - 弹窗宽度 40，高度 7，居中
+    /// - [是] 按钮位于 y+4 行，btn_x 列，宽度 6
+    /// - [否] 按钮位于 y+4 行，btn_x+8 列，宽度 6
+    fn delete_confirm_mouse_click(&mut self, col: u16, row: u16) {
+        let (w, h) = self.screen;
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let popup_w = 40u16.min(w.saturating_sub(2));
+        let popup_h = 7u16.min(h.saturating_sub(2));
+        let popup_x = w / 2 - popup_w / 2;
+        let popup_y = h / 2 - popup_h / 2;
+
+        // [是] [否] 按钮位置（与 draw_delete_confirm 一致）
+        let btn_total_w = 14u16; // 6 + 2 + 6
+        let btn_x = popup_x + (popup_w - btn_total_w) / 2;
+        let yes_row = popup_y + 4;
+        let yes_start = btn_x;
+        let yes_end = btn_x + 6;
+        let no_start = btn_x + 8;
+        let no_end = btn_x + 14;
+
+        // 点击 [是] 按钮
+        if row == yes_row && col >= yes_start && col < yes_end {
+            self.confirm_delete();
+            return;
+        }
+
+        // 点击 [否] 按钮
+        if row == yes_row && col >= no_start && col < no_end {
+            self.pending_delete = None;
+            self.set_toast("已取消删除");
+            return;
+        }
+
+        // 点击弹窗外部或其他区域：取消
+        self.pending_delete = None;
+        self.set_toast("已取消删除");
     }
 }
 
