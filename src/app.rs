@@ -135,7 +135,9 @@ impl App {
         use KeyCode::*;
         match self.mode {
             Mode::ActionMenu => {
-                let n = Self::action_menu_options().len();
+                let node = self.tree.cursor_node();
+                let runnable = is_runnable(&node.path);
+                let n = Self::action_menu_options(runnable).len();
                 match key.code {
                     Up | Char('k') => {
                         self.action_menu_index = (self.action_menu_index + n - 1) % n
@@ -622,7 +624,7 @@ impl App {
         }
     }
 
-    /// 在系统终端中运行当前 .sh 脚本，执行完毕后提示按任意键关闭
+    /// 在系统终端中运行当前脚本/可执行文件，执行完毕后提示按任意键关闭
     fn run_script(&mut self) {
         let node = self.tree.cursor_node();
         let path = node.path.clone();
@@ -632,9 +634,22 @@ impl App {
             return;
         };
         let escaped = path.to_string_lossy().replace('\'', "'\\''");
+
+        // 根据扩展名选择解释器；无匹配时直接执行（需有执行权限）
+        let run_cmd = match script_interpreter(&path) {
+            Some(interp) => format!("{} '{}'", interp, escaped),
+            None => {
+                // 直接执行：绝对路径直接用，相对路径加 ./
+                if path.is_absolute() {
+                    format!("'{}'", escaped)
+                } else {
+                    format!("./'{}'", escaped)
+                }
+            }
+        };
+
         let script = format!(
-            "bash '{}'\necho \"\"\necho \"按任意键关闭...\"\nread -n 1",
-            escaped
+            "{run_cmd}\necho \"\"\necho \"按任意键关闭...\"\nread -n 1"
         );
         self.run_in_terminal(&term, &dir, &script, "运行脚本");
     }
@@ -1020,11 +1035,18 @@ read
     }
 
     /// 操作菜单选项列表（后续新增功能直接加到这里）
-    pub fn action_menu_options() -> Vec<&'static str> {
-        vec![
-            "1. 运行脚本",
-            "2. 删除",
-        ]
+    /// `runnable` 为 true 时显示"运行脚本"，否则只显示"删除"
+    pub fn action_menu_options(runnable: bool) -> Vec<&'static str> {
+        if runnable {
+            vec![
+                "1. 运行脚本",
+                "2. 删除",
+            ]
+        } else {
+            vec![
+                "1. 删除",
+            ]
+        }
     }
 
     fn open_action_menu(&mut self) {
@@ -1033,10 +1055,19 @@ read
     }
 
     fn action_menu_apply(&mut self) {
-        match self.action_menu_index {
-            0 => self.run_script(),
-            1 => self.delete_current(),
-            _ => {}
+        let node = self.tree.cursor_node();
+        let runnable = is_runnable(&node.path);
+        if runnable {
+            match self.action_menu_index {
+                0 => self.run_script(),
+                1 => self.delete_current(),
+                _ => {}
+            }
+        } else {
+            match self.action_menu_index {
+                0 => self.delete_current(),
+                _ => {}
+            }
         }
         self.mode = Mode::Browse;
     }
@@ -1047,7 +1078,9 @@ read
             return;
         }
 
-        let options = Self::action_menu_options();
+        let node = self.tree.cursor_node();
+        let runnable = is_runnable(&node.path);
+        let options = Self::action_menu_options(runnable);
         let menu_w = 40u16.min(w.saturating_sub(2));
         let menu_h = (options.len() as u16 + 4).min(h.saturating_sub(4));
         let menu_x = w / 2 - menu_w / 2;
@@ -1186,6 +1219,59 @@ const TEXT_EXTS: &[&str] = &[
     // 纯文本/日志
     "txt", "log", "csv", "tsv", "lock",
 ];
+
+/// 可通过右键"运行脚本"执行的扩展名（小写）
+const SCRIPT_EXTS: &[&str] = &[
+    // Shell
+    "sh", "bash", "zsh", "fish",
+    // 脚本语言
+    "py", "js", "mjs", "cjs", "ts", "rb", "pl", "lua", "php",
+    // JVM
+    "jar", "groovy", "gradle",
+];
+
+/// 判断文件是否可通过"运行脚本"执行：
+/// ① 扩展名在 SCRIPT_EXTS 中
+/// ② 无扩展名（或不在已知列表中）但有 Unix 执行权限
+pub(crate) fn is_runnable(path: &std::path::Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_l = ext.to_lowercase();
+        if SCRIPT_EXTS.contains(&ext_l.as_str()) {
+            return true;
+        }
+    }
+    // 无扩展名或未知扩展名：检查 Unix 执行权限
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = path.metadata() {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// 根据扩展名返回解释器命令，用于 `run_script`。
+/// 返回 `None` 表示该文件有执行权限，直接 `./xxx` 执行。
+fn script_interpreter(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension().and_then(|e| e.to_str())?;
+    match ext.to_lowercase().as_str() {
+        "sh" | "bash" | "zsh" => Some("bash"),
+        "fish" => Some("fish"),
+        "py" => Some("python3"),
+        "js" | "mjs" | "cjs" => Some("node"),
+        "ts" => Some("npx tsx"),
+        "rb" => Some("ruby"),
+        "pl" => Some("perl"),
+        "lua" => Some("lua"),
+        "php" => Some("php"),
+        "jar" => Some("java -jar"),
+        "groovy" | "gradle" => Some("groovy"),
+        _ => None,
+    }
+}
 
 /// 无扩展名时按文件名识别的常见文本文件（小写比较）
 const TEXT_NAMES: &[&str] = &[
