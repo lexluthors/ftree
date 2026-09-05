@@ -6,6 +6,7 @@ mod git_commit;
 mod templates;
 mod tree;
 mod ui;
+mod watcher;
 
 use std::env;
 use std::io::{self, IsTerminal};

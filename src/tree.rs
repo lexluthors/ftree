@@ -238,18 +238,44 @@ impl Tree {
     }
 
     /// 刷新：重新读取所有已展开目录的子项（用于检测外部新增/删除的文件）。
+    /// 保留所有已展开目录的状态——不会把展开的目录收起来。
     pub fn refresh(&mut self) {
-        fn reload_node(n: &mut Node, show_hidden: bool) {
+        // 一次性收集所有展开目录的路径，避免逐层收集时丢失深层状态
+        fn collect_expanded(n: &Node, out: &mut std::collections::HashSet<PathBuf>) {
+            if n.is_dir() && n.expanded {
+                out.insert(n.path.clone());
+                for c in &n.children {
+                    collect_expanded(c, out);
+                }
+            }
+        }
+        let expanded_paths = {
+            let mut set = std::collections::HashSet::new();
+            if self.root.is_dir() && self.root.expanded {
+                set.insert(self.root.path.clone());
+                for c in &self.root.children {
+                    collect_expanded(c, &mut set);
+                }
+            }
+            set
+        };
+
+        fn reload_node(n: &mut Node, show_hidden: bool, expanded_paths: &std::collections::HashSet<PathBuf>) {
             if n.is_dir() && n.expanded {
                 n.loaded = false;
                 n.children.clear();
                 n.load_children(show_hidden);
+
+                // 从全局展开路径集合中恢复子目录的展开状态
                 for c in &mut n.children {
-                    reload_node(c, show_hidden);
+                    if expanded_paths.contains(&c.path) {
+                        c.expanded = true;
+                        reload_node(c, show_hidden, expanded_paths);
+                    }
                 }
             }
         }
-        reload_node(&mut self.root, self.show_hidden);
+        reload_node(&mut self.root, self.show_hidden, &expanded_paths);
         self.rebuild();
     }
 
@@ -278,19 +304,42 @@ impl Tree {
     /// 切换隐藏文件显示；重载整棵已展开树（保留展开状态）。
     pub fn flip_hidden(&mut self) {
         self.show_hidden = !self.show_hidden;
-        fn rebuild_node(n: &mut Node, show: bool) {
-            if n.is_dir() {
+
+        // 一次性收集所有展开目录的路径
+        let expanded_paths = {
+            let mut set = std::collections::HashSet::new();
+            fn collect(n: &Node, out: &mut std::collections::HashSet<PathBuf>) {
+                if n.is_dir() && n.expanded {
+                    out.insert(n.path.clone());
+                    for c in &n.children {
+                        collect(c, out);
+                    }
+                }
+            }
+            if self.root.is_dir() && self.root.expanded {
+                set.insert(self.root.path.clone());
+                for c in &self.root.children {
+                    collect(c, &mut set);
+                }
+            }
+            set
+        };
+
+        fn rebuild_node(n: &mut Node, show: bool, expanded_paths: &std::collections::HashSet<PathBuf>) {
+            if n.is_dir() && n.expanded {
                 n.loaded = false;
                 n.children.clear();
-                if n.expanded {
-                    n.load_children(show);
-                    for c in &mut n.children {
-                        rebuild_node(c, show);
+                n.load_children(show);
+
+                for c in &mut n.children {
+                    if expanded_paths.contains(&c.path) {
+                        c.expanded = true;
+                        rebuild_node(c, show, expanded_paths);
                     }
                 }
             }
         }
-        rebuild_node(&mut self.root, self.show_hidden);
+        rebuild_node(&mut self.root, self.show_hidden, &expanded_paths);
         self.rebuild();
     }
 }
@@ -369,5 +418,31 @@ mod tests {
         assert_eq!(tree.visible.len(), 1);
         tree.toggle_cursor(); // 再展开根
         assert_eq!(tree.visible.len(), 6); // sub 仍是展开状态
+    }
+
+    #[test]
+    fn refresh_preserves_multi_level_expanded_state() {
+        let (base, mut tree) = fixture_tree();
+        // 展开 sub（一级目录）
+        tree.move_cursor(1); // sub
+        tree.toggle_cursor();
+        // 展开 deep（二级目录）
+        tree.move_cursor(1); // deep
+        tree.toggle_cursor();
+        // 此时可见：根+sub+deep+c.txt+a.mp4+b.mp4 = 6
+        // 外部新增文件
+        fs::write(base.join("sub/new_file.txt"), b"new").unwrap();
+        fs::write(base.join("sub/deep/leaf.txt"), b"leaf").unwrap();
+        // 刷新
+        tree.refresh();
+        // 所有展开状态应保持
+        assert!(tree.node_at(&tree.visible[1]).expanded, "sub 应保持展开");
+        assert!(tree.node_at(&tree.visible[2]).expanded, "deep 应保持展开（二级）");
+        // 新文件应出现
+        // 可见行：根+sub+deep+leaf.txt+c.txt+new_file.txt+a.mp4+b.mp4
+        assert_eq!(tree.node_at(&tree.visible[3]).name, "leaf.txt", "deep 的子项应可见");
+        assert_eq!(tree.node_at(&tree.visible[4]).name, "c.txt");
+        assert_eq!(tree.node_at(&tree.visible[5]).name, "new_file.txt", "新增文件应可见");
+        assert_eq!(tree.visible.len(), 8, "新增文件应可见");
     }
 }

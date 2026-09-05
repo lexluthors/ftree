@@ -14,6 +14,7 @@ use crate::config::Template;
 use crate::templates;
 use crate::tree::Tree;
 use crate::ui::BTN_W;
+use crate::watcher::FsWatcher;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -61,14 +62,22 @@ pub struct App {
     pub last_click: Option<(Instant, u16, u16)>,
     /// 待删除确认：存储 (路径, 显示名, 父目录链)
     pub pending_delete: Option<(PathBuf, String, Vec<usize>)>,
+    /// 文件系统监听器（自动刷新）
+    pub watcher: Option<FsWatcher>,
+    /// 上次收到文件系统事件的时间（用于防抖）
+    pub last_fs_event: Option<Instant>,
 }
 
 /// 双击判定窗口：300ms 内同一单元格第二次按下视为双击
 const DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(300);
 
+/// 文件系统事件防抖：收到事件后等待 300ms 无新事件再刷新
+const FS_DEBOUNCE: Duration = Duration::from_millis(300);
+
 impl App {
     pub fn new(root: PathBuf, show_hidden: bool) -> Self {
         let root_display = root.to_string_lossy().into_owned();
+        let watcher = FsWatcher::new(&root);
         App {
             tree: Tree::new(root, show_hidden),
             mode: Mode::Browse,
@@ -85,6 +94,8 @@ impl App {
             terminal: detect_terminal(),
             last_click: None,
             pending_delete: None,
+            watcher,
+            last_fs_event: None,
         }
     }
 
@@ -93,9 +104,31 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        // toast 自动消失
         if let Some((_, t)) = &self.toast {
             if t.elapsed() > Duration::from_secs(4) {
                 self.toast = None;
+            }
+        }
+        // 文件系统事件监听：检查是否有新的文件变化信号
+        if let Some(w) = &self.watcher {
+            if w.drain_refresh() {
+                self.last_fs_event = Some(Instant::now());
+            }
+        }
+        // 防抖：等 300ms 无新事件后再刷新，避免连续创建文件时频繁刷新
+        if let Some(t) = self.last_fs_event {
+            if t.elapsed() >= FS_DEBOUNCE {
+                self.last_fs_event = None;
+                // 暂停监听器，避免 load_children() 触发的事件导致循环刷新
+                if let Some(w) = &self.watcher {
+                    w.pause();
+                }
+                self.tree.refresh();
+                // 恢复监听器，清空暂停期间积压的事件
+                if let Some(w) = &self.watcher {
+                    w.resume();
+                }
             }
         }
     }

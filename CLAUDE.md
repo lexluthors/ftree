@@ -44,6 +44,13 @@ The application follows a classic TUI event loop pattern:
   - `rebuild()`: Flattens expanded tree into visible rows after any structural change
   - Directories sorted before files, both alphabetically
 
+- **watcher.rs**: File system watcher for automatic tree refresh.
+  - Uses `notify` crate with OS-native backends: **FSEvents** (macOS) / **inotify** (Linux)
+  - Runs in background thread, sends events via `mpsc::channel`
+  - Only monitors Create/Remove/Modify events (ignores metadata-only changes)
+  - Debounces events (300ms quiet period) to avoid excessive refreshes
+  - `Tree::refresh()` only reloads expanded directories — efficient for large trees
+
 - **ui.rs**: Rendering with ratatui. Layout:
   - Top: Status bar (root path, selection count, hidden file toggle)
   - Middle: Tree rows with right-side button hotzones `[复制] [cd] [终端] [打开]` (total width `BTN_W = 25`)
@@ -71,6 +78,7 @@ The application follows a classic TUI event loop pattern:
 3. **Mouse hit zones**: Button areas calculated from right edge (`BTN_W` constant), with 1-column gaps between buttons
 4. **Toast auto-dismiss**: 4-second timeout checked in `tick()` called when no events pending
 5. **Terminal detection**: Probes `$TERMINAL` env var first, then tries common terminals with `--version`
+6. **Auto-refresh with OS events**: Uses `notify` crate (FSEvents/inotify) for zero-overhead file watching. Events are debounced (300ms) and only trigger refresh of expanded directories. Idle CPU usage: ~0%
 
 ## Testing
 
