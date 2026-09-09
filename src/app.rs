@@ -692,6 +692,7 @@ impl App {
     /// 用 terax 编辑器打开文本文件（Linux 版）。
     /// 使用 setsid 让 terax 完全脱离 ftree 的终端会话，避免 GUI 初始化时
     /// 与显示服务器交互导致桌面崩溃。
+    /// 启动后尝试使用 xdotool/wmctrl 激活窗口到最顶层。
     #[cfg(not(target_os = "macos"))]
     fn open_with_terax(&mut self, path: &std::path::Path) {
         let Some(bin) = terax_binary() else {
@@ -703,25 +704,28 @@ impl App {
         cmd.arg(&bin).arg(path);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
-            Ok(_) => self.set_toast(format!("已用 terax 打开 {}", file_name_display(path))),
+            Ok(_) => {
+                // 尝试激活 terax 窗口到最顶层（后台执行，不阻塞主流程）
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    activate_terax_window();
+                });
+                self.set_toast(format!("已用 terax 打开 {}", file_name_display(path)));
+            }
             Err(e) => self.set_toast(format!("terax 启动失败: {e}")),
         }
     }
 
     /// 用 terax 编辑器打开文本文件（macOS 版）。
-    /// macOS 上使用 open 命令启动 .app 应用，无需 setsid。
+    /// macOS 上使用 open 命令启动 .app 应用，并使用 osascript 激活窗口。
     #[cfg(target_os = "macos")]
     fn open_with_terax(&mut self, path: &std::path::Path) {
-        // macOS: 优先用 open 命令（支持 .app 包），否则直接运行二进制
         let mut cmd = if let Some(bin) = terax_binary() {
-            // 如果找到 .app 路径或 PATH 中的二进制
             if bin.ends_with("/terax") && bin.contains(".app") {
-                // 是 .app 包内的二进制，用 open -a 启动
                 let mut c = Command::new("open");
                 c.arg("-a").arg("Terax").arg(path);
                 c
             } else {
-                // PATH 中的二进制，用 setsid 的等价物（在 macOS 上不需要）
                 let mut c = Command::new(bin);
                 c.arg(path);
                 c
@@ -732,7 +736,20 @@ impl App {
         };
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
-            Ok(_) => self.set_toast(format!("已用 terax 打开 {}", file_name_display(path))),
+            Ok(_) => {
+                // macOS: 使用 osascript 激活 Terax 窗口到最顶层
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = Command::new("osascript")
+                        .arg("-e")
+                        .arg("tell application \"Terax\" to activate")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+                });
+                self.set_toast(format!("已用 terax 打开 {}", file_name_display(path)));
+            }
             Err(e) => self.set_toast(format!("terax 启动失败: {e}")),
         }
     }
@@ -1235,6 +1252,32 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 #[cfg(not(target_os = "macos"))]
 fn terax_binary() -> Option<String> {
     find_in_path("terax").map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 激活 terax 窗口到最顶层（Linux 版）。
+/// 尝试使用 xdotool 或 wmctrl 来激活窗口。
+#[cfg(not(target_os = "macos"))]
+fn activate_terax_window() {
+    // 优先尝试 xdotool（支持 X11）
+    if find_in_path("xdotool").is_some() {
+        // 搜索 terax 窗口并激活
+        let _ = Command::new("xdotool")
+            .args(["search", "--name", "terax", "windowraise"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        return;
+    }
+    // 备选 wmctrl
+    if find_in_path("wmctrl").is_some() {
+        let _ = Command::new("wmctrl")
+            .args(["-a", "terax"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 /// 查找 terax 可执行文件（macOS：PATH → .app 内置二进制）
