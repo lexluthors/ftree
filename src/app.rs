@@ -689,16 +689,47 @@ impl App {
 
     // ---------- 双击打开 ----------
 
-    /// 用 terax 编辑器打开文本文件。
-    /// terax 内置 single-instance：已运行时转发文件给现有实例（开新标签并自动
-    /// show + set_focus 弹出/置顶窗口）；未运行时直接新建主窗口。
+    /// 用 terax 编辑器打开文本文件（Linux 版）。
+    /// 使用 setsid 让 terax 完全脱离 ftree 的终端会话，避免 GUI 初始化时
+    /// 与显示服务器交互导致桌面崩溃。
+    #[cfg(not(target_os = "macos"))]
     fn open_with_terax(&mut self, path: &std::path::Path) {
         let Some(bin) = terax_binary() else {
             self.set_toast("未找到 terax，无法打开文件");
             return;
         };
-        let mut cmd = Command::new(bin);
-        cmd.arg(path);
+        // setsid 创建新会话，terax 完全脱离终端进程组
+        let mut cmd = Command::new("setsid");
+        cmd.arg(&bin).arg(path);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match cmd.spawn() {
+            Ok(_) => self.set_toast(format!("已用 terax 打开 {}", file_name_display(path))),
+            Err(e) => self.set_toast(format!("terax 启动失败: {e}")),
+        }
+    }
+
+    /// 用 terax 编辑器打开文本文件（macOS 版）。
+    /// macOS 上使用 open 命令启动 .app 应用，无需 setsid。
+    #[cfg(target_os = "macos")]
+    fn open_with_terax(&mut self, path: &std::path::Path) {
+        // macOS: 优先用 open 命令（支持 .app 包），否则直接运行二进制
+        let mut cmd = if let Some(bin) = terax_binary() {
+            // 如果找到 .app 路径或 PATH 中的二进制
+            if bin.ends_with("/terax") && bin.contains(".app") {
+                // 是 .app 包内的二进制，用 open -a 启动
+                let mut c = Command::new("open");
+                c.arg("-a").arg("Terax").arg(path);
+                c
+            } else {
+                // PATH 中的二进制，用 setsid 的等价物（在 macOS 上不需要）
+                let mut c = Command::new(bin);
+                c.arg(path);
+                c
+            }
+        } else {
+            self.set_toast("未找到 terax，无法打开文件");
+            return;
+        };
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
             Ok(_) => self.set_toast(format!("已用 terax 打开 {}", file_name_display(path))),
