@@ -1255,28 +1255,35 @@ fn terax_binary() -> Option<String> {
 }
 
 /// 激活 terax 窗口到最顶层（Linux 版）。
-/// 尝试使用 xdotool 或 wmctrl 来激活窗口。
+/// 使用 xdotool 通过窗口类名查找并激活窗口（获得焦点，弹到前面）。
 #[cfg(not(target_os = "macos"))]
 fn activate_terax_window() {
     // 优先尝试 xdotool（支持 X11）
-    if find_in_path("xdotool").is_some() {
-        // 搜索 terax 窗口并激活
-        let _ = Command::new("xdotool")
-            .args(["search", "--name", "terax", "windowraise"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    if find_in_path("xdotool").is_none() {
         return;
     }
-    // 备选 wmctrl
-    if find_in_path("wmctrl").is_some() {
-        let _ = Command::new("wmctrl")
-            .args(["-a", "terax"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+
+    // 通过窗口类名查找 terax 窗口（比标题更可靠）
+    // xdotool search --class terax 可以匹配窗口类名包含 "terax" 的窗口
+    let output = Command::new("xdotool")
+        .args(["search", "--class", "terax"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+
+    if let Ok(out) = output {
+        let windows = String::from_utf8_lossy(&out.stdout);
+        // 取最后一个窗口（最新创建的）
+        if let Some(wid) = windows.lines().last() {
+            // 激活窗口：获得焦点 + 切换到该窗口所在桌面 + 置于顶层
+            let _ = Command::new("xdotool")
+                .args(["windowactivate", "--sync", wid])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
     }
 }
 
