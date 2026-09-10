@@ -170,12 +170,22 @@ impl Clipboard {
             return Err("没有有效的文件路径".to_string());
         }
 
-        // 构建 AppleScript：set the clipboard to {POSIX file "path1", POSIX file "path2", ...}
-        let file_refs: Vec<String> = paths
-            .iter()
-            .map(|p| format!("POSIX file \"{}\"", p.replace('"', "\\\"")))
-            .collect();
-        let script = format!("set the clipboard to {{{}}}", file_refs.join(", "));
+        // 构建 AppleScript
+        // 注意：macOS 剪贴板设置多个文件需要使用正确的语法
+        let script = if paths.len() == 1 {
+            // 单个文件
+            format!(
+                "set the clipboard to (POSIX file \"{}\")",
+                paths[0].replace('\\', "\\\\").replace('"', "\\\"")
+            )
+        } else {
+            // 多个文件：使用列表语法
+            let file_refs: Vec<String> = paths
+                .iter()
+                .map(|p| format!("(POSIX file \"{}\")", p.replace('\\', "\\\\").replace('"', "\\\"")))
+                .collect();
+            format!("set the clipboard to {{{}}}", file_refs.join(", "))
+        };
 
         Command::new("osascript")
             .arg("-e")
@@ -193,13 +203,28 @@ impl Clipboard {
     #[cfg(target_os = "macos")]
     fn get_files_macos(&self) -> Result<Vec<String>, String> {
         // 使用 osascript 读取剪贴板中的文件
+        // 注意：需要处理单个文件和多个文件的情况
         let script = r#"
-            set theFiles to the clipboard as «class furl»
-            set output to ""
-            repeat with aFile in theFiles
-                set output to output & "file://" & (POSIX path of aFile) & linefeed
-            end repeat
-            return output
+            try
+                set theClipboard to the clipboard
+                set output to ""
+
+                -- 尝试作为文件列表读取
+                if class of theClipboard is list then
+                    repeat with anItem in theClipboard
+                        if class of anItem is «class furl» then
+                            set output to output & "file://" & (POSIX path of anItem) & linefeed
+                        end if
+                    end repeat
+                else if class of theClipboard is «class furl» then
+                    -- 单个文件
+                    set output to "file://" & (POSIX path of theClipboard) & linefeed
+                end if
+
+                return output
+            on error
+                return ""
+            end try
         "#;
 
         let output = Command::new("osascript")
@@ -221,6 +246,10 @@ impl Clipboard {
             .filter(|line| line.starts_with("file://"))
             .map(|line| line.trim().to_string())
             .collect();
+
+        if uris.is_empty() {
+            return Err("剪贴板中没有文件".to_string());
+        }
 
         Ok(uris)
     }
