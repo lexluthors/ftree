@@ -331,7 +331,8 @@ fn draw_action_menu(buf: &mut Buffer, app: &App, area: Rect) {
     let w = 40u16.min(area.width - 2);
     let node = app.tree.cursor_node();
     let runnable = crate::app::is_runnable(&node.path);
-    let options = App::action_menu_options(runnable);
+    let is_dir = node.is_dir();
+    let options = App::action_menu_options(runnable, is_dir);
     let h = (options.len() as u16 + 4).min(area.height.saturating_sub(4));
     let x = area.x + area.width / 2 - w / 2;
     let y = area.y + area.height / 2 - h / 2;

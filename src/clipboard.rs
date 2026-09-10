@@ -54,6 +54,92 @@ impl Clipboard {
             ClipKind::MacOS => ("pbcopy", vec![]),
             ClipKind::Unavailable(msg) => return Err(msg.to_string()),
         };
+        self.run_clipboard_cmd(cmd, args, text)
+    }
+
+    /// 复制文件 URI 列表到剪贴板（text/uri-list 格式）。
+    /// 用于粘贴到文件管理器（Nautilus/Dolphin）或聊天工具（微信/QQ）。
+    /// uri_list 格式：每行一个 file:// URI，使用 \r\n 分隔（标准格式）。
+    ///
+    /// 兼容性说明：
+    /// - GNOME 文件管理器（Nautilus）使用 x-special/gnome-copied-files 格式
+    /// - KDE 文件管理器（Dolphin）和聊天工具使用 text/uri-list 格式
+    /// - 这里优先使用 GNOME 格式，因为大多数现代文件管理器都支持
+    pub fn set_uri_list(&self, uri_list: &str) -> Result<(), String> {
+        match &self.kind {
+            ClipKind::X11 => {
+                // GNOME 格式：第一行是操作类型（copy/cut），后面是 URI 列表
+                // 注意：GNOME 格式使用 \n 分隔，不是 \r\n
+                // 需要将输入的 \r\n 转换为 \n
+                let normalized_uris = uri_list.replace("\r\n", "\n");
+                let gnome_format = format!("copy\n{}", normalized_uris);
+                self.run_clipboard_cmd(
+                    "xclip",
+                    vec!["-selection", "clipboard", "-t", "x-special/gnome-copied-files"],
+                    &gnome_format,
+                )
+            }
+            ClipKind::Wayland => {
+                // Wayland: wl-copy 支持 --type 参数
+                // 使用标准 text/uri-list 格式（Wayland 文件管理器通常支持）
+                self.run_clipboard_cmd("wl-copy", vec!["--type", "text/uri-list"], uri_list)
+            }
+            #[cfg(target_os = "macos")]
+            ClipKind::MacOS => {
+                // macOS: pbcopy 不支持 text/uri-list，使用 osascript 设置 POSIX file
+                self.set_files_macos(uri_list)
+            }
+            ClipKind::Unavailable(msg) => Err(msg.to_string()),
+        }
+    }
+
+    /// 从剪贴板读取文件 URI 列表。
+    /// 返回 Vec<String>，每个元素是 file:// URI。
+    pub fn get_uri_list(&self) -> Result<Vec<String>, String> {
+        let (cmd, args): (&str, Vec<&str>) = match &self.kind {
+            ClipKind::X11 => {
+                // 尝试读取 GNOME 格式（x-special/gnome-copied-files）
+                // 格式：第一行是 "copy" 或 "cut"，后面是 URI 列表
+                ("xclip", vec!["-selection", "clipboard", "-t", "x-special/gnome-copied-files", "-o"])
+            }
+            ClipKind::Wayland => {
+                ("wl-paste", vec!["--type", "text/uri-list"])
+            }
+            #[cfg(target_os = "macos")]
+            ClipKind::MacOS => return self.get_files_macos(),
+            ClipKind::Unavailable(msg) => return Err(msg.to_string()),
+        };
+
+        let output = Command::new(cmd)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|e| format!("无法读取剪贴板: {e}"))?;
+
+        if !output.status.success() {
+            return Err("剪贴板读取失败".to_string());
+        }
+
+        let content = String::from_utf8_lossy(&output.stdout);
+
+        // 解析 URI 列表
+        let uris: Vec<String> = content
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                // 跳过空行和操作类型行（copy/cut）
+                !line.is_empty() && line != "copy" && line != "cut" && line.starts_with("file://")
+            })
+            .map(|line| line.trim().to_string())
+            .collect();
+
+        Ok(uris)
+    }
+
+    /// 内部方法：运行剪贴板命令并写入数据
+    fn run_clipboard_cmd(&self, cmd: &str, args: Vec<&str>, data: &str) -> Result<(), String> {
         let mut child = Command::new(cmd)
             .args(&args)
             .stdin(Stdio::piped())
@@ -63,10 +149,79 @@ impl Clipboard {
             .map_err(|e| format!("无法启动 {cmd}: {e}"))?;
         let stdin = child.stdin.take().ok_or("无法打开输入管道")?;
         let mut buf = stdin;
-        buf.write_all(text.as_bytes())
+        buf.write_all(data.as_bytes())
             .map_err(|e| format!("写入剪贴板失败: {e}"))?;
         let _ = buf.flush();
         drop(buf); // EOF → 数据交给剪贴板进程
         Ok(())
+    }
+
+    /// macOS 专用：使用 osascript 将文件设置到剪贴板
+    #[cfg(target_os = "macos")]
+    fn set_files_macos(&self, uri_list: &str) -> Result<(), String> {
+        // 解析 file:// URI，提取路径
+        let paths: Vec<&str> = uri_list
+            .lines()
+            .filter(|l| l.starts_with("file://"))
+            .map(|l| &l[7..]) // 去掉 "file://" 前缀
+            .collect();
+
+        if paths.is_empty() {
+            return Err("没有有效的文件路径".to_string());
+        }
+
+        // 构建 AppleScript：set the clipboard to {POSIX file "path1", POSIX file "path2", ...}
+        let file_refs: Vec<String> = paths
+            .iter()
+            .map(|p| format!("POSIX file \"{}\"", p.replace('"', "\\\"")))
+            .collect();
+        let script = format!("set the clipboard to {{{}}}", file_refs.join(", "));
+
+        Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("无法执行 osascript: {e}"))?;
+
+        Ok(())
+    }
+
+    /// macOS 专用：从剪贴板读取文件列表
+    #[cfg(target_os = "macos")]
+    fn get_files_macos(&self) -> Result<Vec<String>, String> {
+        // 使用 osascript 读取剪贴板中的文件
+        let script = r#"
+            set theFiles to the clipboard as «class furl»
+            set output to ""
+            repeat with aFile in theFiles
+                set output to output & "file://" & (POSIX path of aFile) & linefeed
+            end repeat
+            return output
+        "#;
+
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|e| format!("无法执行 osascript: {e}"))?;
+
+        if !output.status.success() {
+            return Err("剪贴板中没有文件".to_string());
+        }
+
+        let content = String::from_utf8_lossy(&output.stdout);
+        let uris: Vec<String> = content
+            .lines()
+            .filter(|line| line.starts_with("file://"))
+            .map(|line| line.trim().to_string())
+            .collect();
+
+        Ok(uris)
     }
 }

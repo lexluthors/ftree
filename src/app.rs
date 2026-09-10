@@ -170,7 +170,8 @@ impl App {
             Mode::ActionMenu => {
                 let node = self.tree.cursor_node();
                 let runnable = is_runnable(&node.path);
-                let n = Self::action_menu_options(runnable).len();
+                let is_dir = node.is_dir();
+                let n = Self::action_menu_options(runnable, is_dir).len();
                 match key.code {
                     Up | Char('k') => {
                         self.action_menu_index = (self.action_menu_index + n - 1) % n
@@ -657,6 +658,165 @@ impl App {
         }
     }
 
+    /// 复制选中的文件/目录到系统剪贴板（text/uri-list 格式）。
+    /// 复制后可以粘贴到文件管理器（Nautilus/Dolphin）或聊天工具（微信/QQ）。
+    /// 如果没有选中文件，则复制当前光标所在的文件/目录。
+    fn copy_files_to_clipboard(&mut self) {
+        // 确定要复制的路径列表
+        let paths = if self.selected.is_empty() {
+            // 没有选中文件，复制当前光标所在的文件/目录
+            vec![self.tree.cursor_node().path.clone()]
+        } else {
+            // 复制所有选中的文件/目录
+            self.selected.clone()
+        };
+
+        if paths.is_empty() {
+            self.set_toast("没有可复制的文件");
+            return;
+        }
+
+        // 转换为 file:// URI 格式（text/uri-list 标准）
+        // 注意：路径需要 URL 编码，但大多数文件管理器可以处理未编码的路径
+        let uris: Vec<String> = paths
+            .iter()
+            .map(|p| format!("file://{}", p.to_string_lossy()))
+            .collect();
+
+        // text/uri-list 标准格式：每行一个 URI，使用 \r\n 分隔
+        let uri_list = uris.join("\r\n");
+
+        // 写入剪贴板
+        match self.clipboard.set_uri_list(&uri_list) {
+            Ok(_) => {
+                let count = paths.len();
+                if count == 1 {
+                    let name = paths[0]
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "文件".to_string());
+                    self.set_toast(format!("✓ 已复制「{}」，可粘贴到文件夹或微信", name));
+                } else {
+                    self.set_toast(format!("✓ 已复制 {} 个文件，可粘贴到文件夹或微信", count));
+                }
+            }
+            Err(e) => self.set_toast(format!("✗ 复制失败: {}", e)),
+        }
+
+        // 清空选中状态
+        self.selected.clear();
+    }
+
+    /// 从剪贴板粘贴文件到当前目录。
+    /// 仅当光标在目录上时可用。
+    /// 支持粘贴文件和目录，自动处理同名冲突（添加数字后缀）。
+    fn paste_files_from_clipboard(&mut self) {
+        let node = self.tree.cursor_node();
+        if !node.is_dir() {
+            self.set_toast("✗ 只能在目录中粘贴文件");
+            return;
+        }
+
+        let target_dir = node.path.clone();
+
+        // 从剪贴板读取文件 URI 列表
+        match self.clipboard.get_uri_list() {
+            Ok(uris) => {
+                if uris.is_empty() {
+                    self.set_toast("✗ 剪贴板中没有文件");
+                    return;
+                }
+
+                let mut success_count = 0;
+                let mut fail_count = 0;
+                let mut skip_count = 0;
+
+                for uri in uris {
+                    // 解析 file:// URI，提取路径
+                    let source_path_str = uri.trim_start_matches("file://");
+                    let source_path = PathBuf::from(source_path_str);
+
+                    // 检查源文件是否存在
+                    if !source_path.exists() {
+                        fail_count += 1;
+                        continue;
+                    }
+
+                    // 获取文件名
+                    let file_name = match source_path.file_name() {
+                        Some(name) => name.to_string_lossy().into_owned(),
+                        None => {
+                            fail_count += 1;
+                            continue;
+                        }
+                    };
+
+                    // 构建目标路径，处理同名冲突
+                    let mut target_path = target_dir.join(&file_name);
+                    if target_path.exists() {
+                        // 同名文件已存在，添加数字后缀
+                        let base_name = PathBuf::from(&file_name)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| file_name.clone());
+                        let extension = PathBuf::from(&file_name)
+                            .extension()
+                            .map(|s| s.to_string_lossy().into_owned());
+
+                        let mut counter = 1;
+                        while target_path.exists() {
+                            let new_name = if let Some(ext) = &extension {
+                                format!("{} ({}).{}", base_name, counter, ext)
+                            } else {
+                                format!("{} ({})", base_name, counter)
+                            };
+                            target_path = target_dir.join(&new_name);
+                            counter += 1;
+
+                            // 防止无限循环
+                            if counter > 1000 {
+                                skip_count += 1;
+                                break;
+                            }
+                        }
+
+                        if counter > 1000 {
+                            continue;
+                        }
+                    }
+
+                    // 复制文件或目录
+                    let result = if source_path.is_dir() {
+                        copy_dir_recursive(&source_path, &target_path)
+                    } else {
+                        std::fs::copy(&source_path, &target_path).map(|_| ())
+                    };
+
+                    match result {
+                        Ok(_) => success_count += 1,
+                        Err(_) => fail_count += 1,
+                    }
+                }
+
+                // 显示结果
+                let mut msg = format!("✓ 已粘贴 {} 个文件", success_count);
+                if fail_count > 0 {
+                    msg.push_str(&format!("，{} 个失败", fail_count));
+                }
+                if skip_count > 0 {
+                    msg.push_str(&format!("，{} 个跳过", skip_count));
+                }
+                self.set_toast(msg);
+
+                // 刷新目录树
+                if success_count > 0 {
+                    self.tree.refresh();
+                }
+            }
+            Err(e) => self.set_toast(format!("✗ 粘贴失败: {}", e)),
+        }
+    }
+
     /// 在系统终端中运行当前脚本/可执行文件，执行完毕后提示按任意键关闭
     fn run_script(&mut self) {
         let node = self.tree.cursor_node();
@@ -1116,18 +1276,25 @@ read
     }
 
     /// 操作菜单选项列表（后续新增功能直接加到这里）
-    /// `runnable` 为 true 时显示"运行脚本"，否则只显示"删除"
-    pub fn action_menu_options(runnable: bool) -> Vec<&'static str> {
-        if runnable {
-            vec![
-                "1. 运行脚本",
-                "2. 删除",
-            ]
-        } else {
-            vec![
-                "1. 删除",
-            ]
+    /// `runnable` 为 true 时显示"运行脚本"
+    /// `is_dir` 为 true 时显示"粘贴文件"（仅目录可粘贴）
+    pub fn action_menu_options(runnable: bool, is_dir: bool) -> Vec<&'static str> {
+        let mut options = vec!["1. 复制文件"]; // 所有文件/目录都可复制
+
+        // 仅目录显示"粘贴文件"选项
+        if is_dir {
+            options.push("2. 粘贴文件");
         }
+
+        // 可执行文件显示"运行脚本"
+        if runnable {
+            options.push(if is_dir { "3. 运行脚本" } else { "2. 运行脚本" });
+            options.push(if is_dir { "4. 删除" } else { "3. 删除" });
+        } else {
+            options.push(if is_dir { "3. 删除" } else { "2. 删除" });
+        }
+
+        options
     }
 
     fn open_action_menu(&mut self) {
@@ -1138,15 +1305,25 @@ read
     fn action_menu_apply(&mut self) {
         let node = self.tree.cursor_node();
         let runnable = is_runnable(&node.path);
-        if runnable {
+        let is_dir = node.is_dir();
+
+        if is_dir {
+            // 目录：复制、粘贴、运行脚本（如果是可执行目录）、删除
             match self.action_menu_index {
-                0 => self.run_script(),
-                1 => self.delete_current(),
+                0 => self.copy_files_to_clipboard(),
+                1 => self.paste_files_from_clipboard(),
+                2 if runnable => self.run_script(),
+                2 if !runnable => self.delete_current(),
+                3 if runnable => self.delete_current(),
                 _ => {}
             }
         } else {
+            // 文件：复制、运行脚本（如果可执行）、删除
             match self.action_menu_index {
-                0 => self.delete_current(),
+                0 => self.copy_files_to_clipboard(),
+                1 if runnable => self.run_script(),
+                1 if !runnable => self.delete_current(),
+                2 if runnable => self.delete_current(),
                 _ => {}
             }
         }
@@ -1161,7 +1338,8 @@ read
 
         let node = self.tree.cursor_node();
         let runnable = is_runnable(&node.path);
-        let options = Self::action_menu_options(runnable);
+        let is_dir = node.is_dir();
+        let options = Self::action_menu_options(runnable, is_dir);
         let menu_w = 40u16.min(w.saturating_sub(2));
         let menu_h = (options.len() as u16 + 4).min(h.saturating_sub(4));
         let menu_x = w / 2 - menu_w / 2;
@@ -1343,6 +1521,30 @@ const SCRIPT_EXTS: &[&str] = &[
     // JVM
     "jar", "groovy", "gradle",
 ];
+
+/// 递归复制目录及其所有内容。
+/// 用于粘贴功能中复制目录。
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    // 创建目标目录
+    std::fs::create_dir_all(dst)?;
+
+    // 遍历源目录中的所有条目
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+
+        if src_path.is_dir() {
+            // 递归复制子目录
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            // 复制文件
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+
+    Ok(())
+}
 
 /// 判断文件是否可通过"运行脚本"执行：
 /// ① 扩展名在 SCRIPT_EXTS 中
