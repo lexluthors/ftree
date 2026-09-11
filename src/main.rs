@@ -1,5 +1,7 @@
 mod app;
 mod clipboard;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod clipd;
 mod config;
 mod git;
 mod git_commit;
@@ -44,6 +46,7 @@ fn print_usage() {
     println!("选项:");
     println!("  --hidden         显示隐藏文件（默认隐藏）");
     println!("  --git-commit     启动交互式 git commit 文件选择器（子命令）");
+    println!("  --clip-daemon    内部使用：X11 剪贴板守护进程（由「复制文件」自动启动，勿手动调用）");
     println!("  -h, --help       显示本帮助");
     println!();
     println!("操作（键盘 / 鼠标）:");
@@ -65,6 +68,14 @@ fn print_usage() {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+
+    // X11 剪贴板守护进程（内部入口，由 clipboard.rs 在"复制文件"时启动）。
+    // 必须在终端初始化和任何线程启动之前分流：进程内只有主线程时双 fork 才安全。
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if args.iter().any(|a| a == "--clip-daemon") {
+        std::process::exit(clipd::run());
+    }
+
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_usage();
         return;

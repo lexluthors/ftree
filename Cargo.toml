@@ -10,3 +10,10 @@ crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 notify = "8"
+
+# Linux/X11：自带剪贴板守护进程，一次写入同时提供 text/uri-list 与
+# x-special/gnome-copied-files，让 Nautilus / Dolphin / QQ / 微信都能识别。
+# （xclip 一次只能持有一个 target，无法满足，故用 x11rb 直接做 selection owner）
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb = { version = "0.13", default-features = false }
+libc = "0.2"

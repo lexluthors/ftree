@@ -658,8 +658,9 @@ impl App {
         }
     }
 
-    /// 复制选中的文件/目录到系统剪贴板（text/uri-list 格式）。
-    /// 复制后可以粘贴到文件管理器（Nautilus/Dolphin）或聊天工具（微信/QQ）。
+    /// 复制选中的文件/目录到系统剪贴板。
+    /// X11 下同时提供 text/uri-list 与 x-special/gnome-copied-files，
+    /// 因此可粘贴到文件管理器（Nautilus/Dolphin）和聊天工具（微信/QQ）。
     /// 如果没有选中文件，则复制当前光标所在的文件/目录。
     fn copy_files_to_clipboard(&mut self) {
         // 确定要复制的路径列表
@@ -676,18 +677,8 @@ impl App {
             return;
         }
 
-        // 转换为 file:// URI 格式（text/uri-list 标准）
-        // 注意：路径需要 URL 编码，但大多数文件管理器可以处理未编码的路径
-        let uris: Vec<String> = paths
-            .iter()
-            .map(|p| format!("file://{}", p.to_string_lossy()))
-            .collect();
-
-        // text/uri-list 标准格式：每行一个 URI，使用 \r\n 分隔
-        let uri_list = uris.join("\r\n");
-
-        // 写入剪贴板
-        match self.clipboard.set_uri_list(&uri_list) {
+        // file:// URI 编码与各平台的多格式协商都由 clipboard 模块负责
+        match self.clipboard.set_files(&paths) {
             Ok(_) => {
                 let count = paths.len();
                 if count == 1 {
@@ -719,10 +710,10 @@ impl App {
 
         let target_dir = node.path.clone();
 
-        // 从剪贴板读取文件 URI 列表
-        match self.clipboard.get_uri_list() {
-            Ok(uris) => {
-                if uris.is_empty() {
+        // 从剪贴板读取文件列表（clipboard 模块已完成 URI 解码）
+        match self.clipboard.get_files() {
+            Ok(sources) => {
+                if sources.is_empty() {
                     self.set_toast("✗ 剪贴板中没有文件");
                     return;
                 }
@@ -731,11 +722,7 @@ impl App {
                 let mut fail_count = 0;
                 let mut skip_count = 0;
 
-                for uri in uris {
-                    // 解析 file:// URI，提取路径
-                    let source_path_str = uri.trim_start_matches("file://");
-                    let source_path = PathBuf::from(source_path_str);
-
+                for source_path in sources {
                     // 检查源文件是否存在
                     if !source_path.exists() {
                         fail_count += 1;
@@ -1723,11 +1710,14 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     fn read_clipboard() -> String {
-        std::process::Command::new("xclip")
-            .args(["-o", "-selection", "clipboard"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
+        // 带超时读取：剪贴板所有权交接瞬间 xclip -o 可能永久阻塞，
+        // 不能让它拖死整个测试套件。
+        crate::clipboard::read_cmd_with_timeout(
+            "xclip",
+            &["-o", "-selection", "clipboard"],
+            std::time::Duration::from_secs(3),
+        )
+        .unwrap_or_default()
     }
 
     /// 轮询剪贴板直到与期望一致（剪贴板是进程共享资源，可能被其他测试写入）。
@@ -1739,6 +1729,120 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         read_clipboard().trim() == expected
+    }
+
+    /// 读取剪贴板指定 target 的内容（带超时，避免所有权交接时卡死）
+    #[cfg(not(target_os = "macos"))]
+    fn read_clip_target(target: &str) -> String {
+        crate::clipboard::read_cmd_with_timeout(
+            "xclip",
+            &["-o", "-selection", "clipboard", "-t", target],
+            std::time::Duration::from_secs(3),
+        )
+        .unwrap_or_default()
+    }
+
+    /// 轮询直到指定 target 的内容包含 expected
+    #[cfg(not(target_os = "macos"))]
+    fn wait_until_target(target: &str, expected: &str) -> bool {
+        for _ in 0..40 {
+            if read_clip_target(target).contains(expected) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        read_clip_target(target).contains(expected)
+    }
+
+    /// 清空剪贴板，让守护进程收到 SelectionClear 后退出（别把它留到测试之后）
+    #[cfg(not(target_os = "macos"))]
+    fn clear_clipboard() {
+        use std::io::Write;
+        if let Ok(mut c) = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            if let Some(mut s) = c.stdin.take() {
+                let _ = s.write_all(b"");
+            }
+            let _ = c.wait();
+        }
+    }
+
+    /// 「右键 → 复制文件」回归测试。
+    ///
+    /// 曾经的 bug：只写 `x-special/gnome-copied-files`，`TARGETS` 里没有 `text/uri-list`，
+    /// QQ/微信(Chromium)、Dolphin(Qt) 认为剪贴板是空的 → 粘不进去（Nautilus 却正常）。
+    /// 现在守护进程必须**同时**提供两种格式。
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn copy_files_publishes_uri_list_and_gnome_formats() {
+        let _g = CLIP_LOCK.lock().unwrap();
+
+        // 测试二进制不认识 --clip-daemon，需显式指向真正的 ftree 才能测到守护进程路径。
+        // current_exe() = target/debug/deps/ftree-<hash> → target/debug/ftree
+        let daemon = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().and_then(|d| d.parent()).map(|d| d.join("ftree")))
+            .filter(|p| p.exists());
+        if let Some(p) = &daemon {
+            std::env::set_var("FTREE_CLIP_DAEMON_EXE", p);
+        }
+
+        let d = std::env::temp_dir().join(format!(
+            "ftree-test-copyfiles-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        // 名字里带空格与 #，URI 必须百分号编码，否则严格解析方会截断
+        let file = d.join("my file #1.png");
+        std::fs::write(&file, b"x").unwrap();
+
+        let mut app = App::new(d.clone(), false);
+        app.tree.move_cursor(1); // 第 0 行是根目录，第 1 行是该文件
+        app.copy_files_to_clipboard();
+
+        let expect = crate::clipboard::path_to_uri(&file);
+        assert!(
+            expect.contains("%20") && expect.contains("%23"),
+            "URI 未正确编码: {expect}"
+        );
+
+        // 聊天软件（QQ/微信）、Dolphin、浏览器依赖 text/uri-list
+        assert!(
+            wait_until_target("text/uri-list", &expect),
+            "剪贴板 text/uri-list 中未找到 {expect}\n实际: {:?}",
+            read_clip_target("text/uri-list")
+        );
+
+        // Nautilus/Thunar 依赖 x-special/gnome-copied-files（只有守护进程路径能同时提供）
+        if daemon.is_some() {
+            assert!(
+                wait_until_target("x-special/gnome-copied-files", &expect),
+                "守护进程未提供 GNOME 格式\n实际: {:?}",
+                read_clip_target("x-special/gnome-copied-files")
+            );
+            let gnome = read_clip_target("x-special/gnome-copied-files");
+            assert_eq!(
+                gnome.lines().next().unwrap_or(""),
+                "copy",
+                "GNOME 格式首行应是操作类型"
+            );
+        }
+
+        // 复制后应清空选中状态
+        assert!(app.selected.is_empty());
+
+        std::env::remove_var("FTREE_CLIP_DAEMON_EXE");
+        clear_clipboard();
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

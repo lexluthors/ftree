@@ -64,7 +64,17 @@ The application follows a classic TUI event loop pattern:
 
 - **config.rs**: Loads templates from `~/.config/ftree/templates.toml`, writes defaults on first run.
 
-- **clipboard.rs**: Detects X11 (`xclip`), Wayland (`wl-copy`), or macOS (`pbcopy`), spawns clipboard process and writes to stdin. Process stays alive to own the clipboard selection.
+- **clipboard.rs**: Detects X11 / Wayland / macOS and writes text (`set`) or files (`set_files`).
+  - Text: spawns `xclip` (X11) / `wl-copy` (Wayland) / `pbcopy` (macOS) and writes to stdin; the process stays alive to own the selection.
+  - Files (`set_files` / `get_files`): X11 → spawns the built-in clipboard daemon (`ftree --clip-daemon`); Wayland → `wl-copy --type text/uri-list`; macOS → `osascript` with `POSIX file`.
+  - Owns the `file://` URI percent-encoding helpers (`path_to_uri` / `uri_to_path` / `parse_uri_list`) — byte-safe, so spaces, CJK and non-UTF-8 filenames survive the round trip.
+  - `read_cmd_with_timeout()`: every clipboard **read** goes through a bounded wait. During an ownership handover `xclip -o` / `wl-paste` can block forever waiting for a SelectionNotify that never arrives, which would freeze the whole TUI.
+
+- **clipd.rs** (Linux/X11 only): the clipboard daemon behind `ftree --clip-daemon`.
+  - X11 selections are negotiated: clients read `TARGETS` first, then request a format they understand. `xclip` can only hold **one** target, so writing only `x-special/gnome-copied-files` made QQ/WeChat (Chromium) and Dolphin (Qt) see an empty clipboard — "复制文件" could not be pasted into chat apps (Nautilus worked, and so did ftree's own paste, because both read that same private target).
+  - The daemon owns CLIPBOARD and serves **both** `text/uri-list` (chat apps / KDE / browsers) and `x-special/gnome-copied-files` (Nautilus / Thunar / Nemo), plus `TARGETS` and `TIMESTAMP`. It deliberately does **not** serve `UTF8_STRING`, so chat apps treat the payload as a file attachment rather than pasting a path as text.
+  - Lifecycle: reads the payload from stdin → double-forks + `setsid` (so the content outlives ftree and survives terminal hangup) → answers `SelectionRequest`s → exits on `SelectionClear`, after draining any already-queued requests so no client is left hanging. The direct child exits immediately and is `wait()`ed by ftree, so no zombies accumulate.
+  - Fallback: if the daemon cannot be spawned (or fork fails, exit code 2), `clipboard.rs` falls back to `xclip -t text/uri-list`.
 
 ### Platform Support
 
@@ -79,12 +89,17 @@ The application follows a classic TUI event loop pattern:
 4. **Toast auto-dismiss**: 4-second timeout checked in `tick()` called when no events pending
 5. **Terminal detection**: Probes `$TERMINAL` env var first, then tries common terminals with `--version`
 6. **Auto-refresh with OS events**: Uses `notify` crate (FSEvents/inotify) for zero-overhead file watching. Events are debounced (300ms) and only trigger refresh of expanded directories. Idle CPU usage: ~0%
+7. **Multi-target clipboard via a self-hosted daemon**: "复制文件" must land in *both* file managers and chat apps, which disagree on the X11 target name. Since one process can only own one clipboard format set, ftree re-execs itself as `ftree --clip-daemon` and serves all formats from there instead of shelling out to `xclip`.
 
 ## Testing
 
 Tests create unique temp directories per test (using atomic counters or nanosecond timestamps) to avoid conflicts when run in parallel.
 
-Clipboard tests require `xclip` and use a `CLIP_LOCK` mutex since X11 clipboard is a shared resource. Tests poll clipboard content with timeout since it's updated asynchronously.
+Clipboard tests require `xclip` and use a `CLIP_LOCK` mutex since X11 clipboard is a shared resource. Tests poll clipboard content with timeout since it's updated asynchronously, and always read through `read_cmd_with_timeout()` — a plain `xclip -o` can block forever if ownership changes mid-request.
+
+Two regression tests guard the "复制文件 → 粘贴到聊天软件" path:
+- `app::tests::copy_files_publishes_uri_list_and_gnome_formats` — drives `copy_files_to_clipboard()` and asserts both `text/uri-list` and `x-special/gnome-copied-files` are readable, with a percent-encoded URI. It points `FTREE_CLIP_DAEMON_EXE` at `target/debug/ftree` because `current_exe()` inside a test binary is the test harness, which does not understand `--clip-daemon`.
+- `tests/clip_daemon.rs` — spawns the real daemon and verifies the published `TARGETS`.
 
 ## Configuration
 
@@ -103,14 +118,27 @@ Defaults are written on first run if the file doesn't exist.
 - **ratatui 0.29**: TUI framework
 - **crossterm 0.28**: Terminal manipulation and event handling
 - **serde + toml**: Configuration parsing
+- **notify 8**: File system watching (FSEvents / inotify)
+- **x11rb 0.13 + libc 0.2** (Linux only, `[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]`): the clipboard daemon's X11 connection and `fork`/`setsid`
 
 ## Platform Notes
 
 使用 `#[cfg(target_os = "macos")]` 条件编译处理跨平台差异：
-- **剪贴板**：macOS 用 `pbcopy`/`pbpaste`，Linux 用 `xclip`/`wl-copy`
+- **剪贴板**：macOS 用 `pbcopy`/`pbpaste`（文件用 `osascript` 写 `POSIX file`），Linux X11 用自带守护进程（回退 `xclip`），Wayland 用 `wl-copy`/`wl-paste`
 - **文件管理器**：macOS 用 `open`，Linux 用 `xdg-open`
 - **终端检测**：macOS 用 `osascript` 检测 iTerm2/Terminal.app，Linux 检测各终端命令
 - 测试中的剪贴板读取函数也按平台分别实现
+
+### 剪贴板格式对照（「复制文件」）
+
+| 目标程序 | 读取的 target | ftree 提供 |
+|---|---|---|
+| QQ / 微信（Chromium/Electron） | `text/uri-list` | ✅ |
+| Dolphin / Kate（Qt）、浏览器 | `text/uri-list` | ✅ |
+| Nautilus / Thunar / Nemo（GTK） | `x-special/gnome-copied-files` | ✅ |
+| 终端、编辑器（纯文本） | `UTF8_STRING` | ❌ 刻意不提供，避免聊天软件把路径当文本发出；需要路径请用 `c` |
+
+Wayland 下 `wl-copy` 只支持单一 MIME 类型，因此只提供 `text/uri-list`。
 
 ## 开发规范（强制）
 
