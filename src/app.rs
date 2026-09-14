@@ -1040,12 +1040,115 @@ fi
 git init -q
 echo "✓ 已初始化 git 仓库"
 
-# 5. 首次 commit
+# 5. 自动检测项目类型并创建 .gitignore（如果不存在）
+if [ ! -f .gitignore ]; then
+    if [ -f "Cargo.toml" ]; then
+        # Rust 项目
+        cat > .gitignore << 'GITIGNORE_EOF'
+# Rust 构建产物
+/target/
+*.rs.bk
+
+# IDE 配置
+.idea/
+.vscode/
+
+# 编辑器临时文件
+*.swp
+*.swo
+*~
+*.tmp
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+GITIGNORE_EOF
+        echo "✓ 已创建 Rust 项目的 .gitignore"
+    elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+        # Android/Gradle 项目
+        cat > .gitignore << 'GITIGNORE_EOF'
+# Gradle 构建产物
+.gradle/
+build/
+app/build/
+
+# Kotlin 编译缓存
+.kotlin/
+
+# IDE 配置
+.idea/
+*.iml
+
+# 本地配置
+local.properties
+
+# 签名文件
+*.jks
+*.keystore
+
+# 构建输出
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# 编译产物
+*.class
+*.jar
+*.log
+
+# 编辑器临时文件
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# NDK 构建产物
+obj/
+.cxx/
+
+# 测试报告
+reports/
+test-results/
+GITIGNORE_EOF
+        echo "✓ 已创建 Android/Gradle 项目的 .gitignore"
+    else
+        # 通用 .gitignore
+        cat > .gitignore << 'GITIGNORE_EOF'
+# IDE 配置
+.idea/
+.vscode/
+*.iml
+
+# 编辑器临时文件
+*.swp
+*.swo
+*~
+*.tmp
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+GITIGNORE_EOF
+        echo "✓ 已创建通用 .gitignore"
+    fi
+else
+    echo "✓ .gitignore 已存在，跳过创建"
+fi
+
+# 6. 首次 commit
 git add .
 git commit -q -m "first commit"
 echo "✓ 已提交"
 
-# 6. 创建 GitHub 仓库并 push
+# 7. 创建 GitHub 仓库并 push
 echo ""
 echo "正在创建 GitHub 仓库: {repo_name} (private)..."
 gh repo create "{repo_name}" --private --source=. --push
