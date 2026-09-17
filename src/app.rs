@@ -60,8 +60,8 @@ pub struct App {
     pub terminal: Option<TermCmd>,
     /// 上一次左键按下（时间, 列, 行），用于双击检测
     pub last_click: Option<(Instant, u16, u16)>,
-    /// 待删除确认：存储 (路径, 显示名, 父目录链)
-    pub pending_delete: Option<(PathBuf, String, Vec<usize>)>,
+    /// 待删除确认：存储待删除文件列表 (路径, 显示名)
+    pub pending_delete: Option<Vec<(PathBuf, String)>>,
     /// 文件系统监听器（自动刷新）
     pub watcher: Option<FsWatcher>,
     /// 上次收到文件系统事件的时间（用于防抖）
@@ -226,6 +226,15 @@ impl App {
                 Char('y') => self.open_yolo(),
                 Char('C') => self.open_picker(),
                 Char(' ') => self.toggle_selected(),
+                Char('s') => {
+                    let n = self.selected.len();
+                    self.selected.clear();
+                    if n > 0 {
+                        self.set_toast(format!("已清除 {} 个选中项", n));
+                    } else {
+                        self.set_toast("没有已选项");
+                    }
+                }
                 Char('g') | Home => self.tree.move_cursor(-(self.tree.cursor as isize)),
                 Char('G') | End => self.tree.move_cursor(self.tree.visible.len() as isize),
                 Up | Char('k') => self.tree.move_cursor(-1),
@@ -500,7 +509,10 @@ impl App {
         };
         let mut cmd = Command::new(&term.name);
         match term.kind {
-            TermKind::Gnome | TermKind::Alacritty => {
+            TermKind::Gnome => {
+                cmd.arg("--working-directory").arg(&dir);
+            }
+            TermKind::Alacritty => {
                 cmd.arg("--working-directory").arg(&dir);
             }
             TermKind::Konsole => {
@@ -529,6 +541,16 @@ impl App {
             }
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir); // 以该目录为工作目录启动
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
             }
         }
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -649,6 +671,16 @@ impl App {
             TermKind::Xterm | TermKind::Custom => {
                 cmd.current_dir(&dir);
                 cmd.arg("-e").arg("claude --dangerously-skip-permissions");
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
             }
         }
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -1244,9 +1276,8 @@ read
         match term.kind {
             TermKind::Gnome => {
                 cmd.arg("--working-directory").arg(dir);
-                // 使用 -e + 单字符串，与 open_yolo 保持一致（-- 多参数方式在部分版本不生效）
-                cmd.arg("-e").arg(format!("bash -c '{script}'",
-                    script = script.replace('\'', "'\\''")));
+                // 使用 -- 替代已弃用的 -e，避免警告
+                cmd.arg("--").arg("bash").arg("-c").arg(script);
             }
             TermKind::Alacritty => {
                 cmd.arg("--working-directory").arg(dir);
@@ -1301,6 +1332,17 @@ read
                 cmd.arg("-e").arg("bash").arg("-c").arg(script);
             }
         }
+        // 使用 setsid 分离子进程，避免僵尸进程
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+        }
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
         match cmd.spawn() {
             Ok(_) => self.set_toast(format!("已在终端打开 {}", label)),
@@ -1312,56 +1354,84 @@ read
 
     /// 删除当前光标所指的文件或文件夹：进入二次确认状态。
     fn delete_current(&mut self) {
-        let node = self.tree.cursor_node();
-        let path = node.path.clone();
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        // 有选中项时删除所有选中，否则删除当前光标所指
+        if self.selected.is_empty() {
+            let node = self.tree.cursor_node();
+            let path = node.path.clone();
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
-        // 不允许删除根目录
-        if path == self.tree.root.path {
-            self.set_toast("无法删除根目录");
-            return;
-        }
+            // 不允许删除根目录
+            if path == self.tree.root.path {
+                self.set_toast("无法删除根目录");
+                return;
+            }
 
-        // 计算父目录的索引链（当前行的 chain 去掉最后一项）
-        let cursor_chain = self.tree.visible.get(self.tree.cursor).cloned().unwrap_or_default();
-        let parent_chain = if cursor_chain.is_empty() {
-            Vec::new()
+            self.pending_delete = Some(vec![(path, name)]);
         } else {
-            cursor_chain[..cursor_chain.len() - 1].to_vec()
-        };
-
-        self.pending_delete = Some((path, name, parent_chain));
+            let mut items: Vec<(PathBuf, String)> = Vec::new();
+            for path in &self.selected {
+                if path == &self.tree.root.path {
+                    continue; // 跳过根目录
+                }
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                items.push((path.clone(), name));
+            }
+            if items.is_empty() {
+                self.set_toast("无法删除根目录");
+                return;
+            }
+            self.pending_delete = Some(items);
+        }
     }
 
-    /// 确认删除：执行实际删除，局部刷新父目录，保留其他展开/收缩状态。
+    /// 确认删除：执行实际删除，全量刷新已展开目录，保留光标位置。
     fn confirm_delete(&mut self) {
-        let (path, name, parent_chain) = match self.pending_delete.take() {
+        let items = match self.pending_delete.take() {
             Some(v) => v,
             None => return,
         };
-        let is_dir = path.is_dir();
-        let result = if is_dir {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match result {
-            Ok(()) => {
-                self.set_toast(format!("已删除: {name}"));
-                self.selected.retain(|s| !s.starts_with(&path));
-                self.tree.refresh_node(&parent_chain);
-                if self.tree.visible.is_empty() {
-                    self.tree.cursor = 0;
-                } else if self.tree.cursor >= self.tree.visible.len() {
-                    self.tree.cursor = self.tree.visible.len() - 1;
+        let count = items.len();
+        let mut failed = 0;
+        let mut last_name = String::new();
+        for (path, name) in &items {
+            let is_dir = path.is_dir();
+            let result = if is_dir {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+            match result {
+                Ok(()) => {
+                    self.selected.retain(|s| !s.starts_with(path));
+                    last_name = name.clone();
+                }
+                Err(_) => {
+                    failed += 1;
                 }
             }
-            Err(e) => {
-                self.set_toast(format!("删除失败: {e}"));
+        }
+        // 全量刷新已展开目录（因为可能涉及多个父目录）
+        self.tree.refresh();
+        // 修正光标位置
+        if self.tree.visible.is_empty() {
+            self.tree.cursor = 0;
+        } else if self.tree.cursor >= self.tree.visible.len() {
+            self.tree.cursor = self.tree.visible.len() - 1;
+        }
+        if failed == 0 {
+            if count == 1 {
+                self.set_toast(format!("已删除: {last_name}"));
+            } else {
+                self.set_toast(format!("已删除 {} 个文件/目录", count));
             }
+        } else {
+            self.set_toast(format!("删除完成，{} 个成功，{} 个失败", count - failed, failed));
         }
     }
 

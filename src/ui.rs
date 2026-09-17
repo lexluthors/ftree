@@ -84,7 +84,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             buf.set_stringn(
                 0,
                 bottom_y,
-                " ↑/↓ 移动  空格 选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
+                " ↑/↓ 移动  空格 选中  s 清除选中  Enter 展开  双击 打开  r 刷新  c 复制  C 模板  d cd  o 终端  t 切换隐藏  q 退出 ",
                 area.width as usize,
                 Style::default().fg(Color::DarkGray),
             );
@@ -419,9 +419,14 @@ fn draw_delete_confirm(buf: &mut Buffer, app: &App, area: Rect) {
     let tx = x + ((w as usize).saturating_sub(title.len() * 2) / 2) as u16;
     buf.set_stringn(tx, y, title, w as usize, Style::default().add_modifier(Modifier::BOLD));
 
-    // 文件名（截断处理）
-    let (_, name, _) = app.pending_delete.as_ref().unwrap();
-    let name_msg = format!("确定要删除「{name}」吗？");
+    // 文件名 / 数量（截断处理）
+    let items = app.pending_delete.as_ref().unwrap();
+    let name_msg = if items.len() == 1 {
+        let name = &items[0].1;
+        format!("确定要删除「{name}」吗？")
+    } else {
+        format!("确定要删除这 {} 个文件/目录吗？", items.len())
+    };
     let max_name_w = (w - 4) as usize;
     let display_name = if unicode_width(&name_msg) > max_name_w {
         truncate_to_width(&name_msg, max_name_w) + "…"
