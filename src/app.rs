@@ -171,7 +171,8 @@ impl App {
                 let node = self.tree.cursor_node();
                 let runnable = is_runnable(&node.path);
                 let is_dir = node.is_dir();
-                let n = Self::action_menu_options(runnable, is_dir).len();
+                let installable = is_installable(&node.path);
+                let n = Self::action_menu_options(runnable, is_dir, installable).len();
                 match key.code {
                     Up | Char('k') => {
                         self.action_menu_index = (self.action_menu_index + n - 1) % n
@@ -866,6 +867,173 @@ impl App {
         self.run_in_terminal(&term, &dir, &script, "运行脚本");
     }
 
+    /// 安装当前文件（根据扩展名选择安装命令）
+    fn install_file(&mut self) {
+        let node = self.tree.cursor_node();
+        let path = node.path.clone();
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            self.set_toast("无法识别文件类型");
+            return;
+        };
+        let ext_l = ext.to_lowercase();
+        let escaped = path.to_string_lossy().replace('\'', "'\\''");
+        let file_name = file_name_display(&path);
+
+        let script = match ext_l.as_str() {
+            "apk" => format!(
+                r#"echo "=== 安装 APK: {file_name} ==="
+echo ""
+if ! command -v adb &> /dev/null; then
+    echo "✗ 未安装 adb，请先安装 Android SDK Platform Tools"
+    echo "按 Enter 键退出..."
+    read
+    exit 1
+fi
+echo "正在安装..."
+adb install '{escaped}'
+if [ $? -eq 0 ]; then
+    echo "✓ 安装成功"
+else
+    echo "✗ 安装失败"
+fi
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            "deb" => format!(
+                r#"echo "=== 安装 DEB: {file_name} ==="
+echo ""
+echo "正在安装（需要 sudo 权限）..."
+sudo dpkg -i '{escaped}'
+if [ $? -ne 0 ]; then
+    echo "正在修复依赖..."
+    sudo apt install -f -y
+fi
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            "rpm" => format!(
+                r#"echo "=== 安装 RPM: {file_name} ==="
+echo ""
+echo "正在安装（需要 sudo 权限）..."
+if command -v dnf &> /dev/null; then
+    sudo dnf install -y '{escaped}'
+elif command -v yum &> /dev/null; then
+    sudo yum install -y '{escaped}'
+else
+    sudo rpm -i '{escaped}'
+fi
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            "flatpak" => format!(
+                r#"echo "=== 安装 Flatpak: {file_name} ==="
+echo ""
+if ! command -v flatpak &> /dev/null; then
+    echo "✗ 未安装 flatpak"
+    echo "按 Enter 键退出..."
+    read
+    exit 1
+fi
+echo "正在安装..."
+flatpak install '{escaped}'
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            "snap" => format!(
+                r#"echo "=== 安装 Snap: {file_name} ==="
+echo ""
+if ! command -v snap &> /dev/null; then
+    echo "✗ 未安装 snap"
+    echo "按 Enter 键退出..."
+    read
+    exit 1
+fi
+echo "正在安装（需要 sudo 权限）..."
+sudo snap install '{escaped}' --dangerous
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            "appimage" => format!(
+                r#"echo "=== 运行 AppImage: {file_name} ==="
+echo ""
+chmod +x '{escaped}'
+echo "正在启动..."
+'{escaped}'
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            #[cfg(target_os = "macos")]
+            "pkg" => format!(
+                r#"echo "=== 安装 PKG: {file_name} ==="
+echo ""
+echo "正在安装（需要 sudo 权限）..."
+sudo installer -pkg '{escaped}' -target /
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            #[cfg(target_os = "macos")]
+            "dmg" => format!(
+                r#"echo "=== 安装 DMG: {file_name} ==="
+echo ""
+echo "正在挂载..."
+hdiutil attach '{escaped}'
+if [ $? -eq 0 ]; then
+    echo "✓ 已挂载，请在弹出的窗口中拖拽安装"
+    echo "安装完成后可运行: hdiutil detach /Volumes/..."
+else
+    echo "✗ 挂载失败"
+fi
+echo ""
+echo "按 Enter 键退出..."
+read
+"#
+            ),
+            #[cfg(target_os = "windows")]
+            "msi" => format!(
+                r#"echo "=== 安装 MSI: {file_name} ==="
+echo ""
+msiexec /i "{escaped}"
+echo ""
+pause
+"#
+            ),
+            #[cfg(target_os = "windows")]
+            "exe" => format!(
+                r#"echo "=== 运行安装程序: {file_name} ==="
+echo ""
+"{escaped}"
+echo ""
+pause
+"#
+            ),
+            _ => {
+                self.set_toast(format!("不支持的安装格式: {}", ext));
+                return;
+            }
+        };
+
+        let dir = path.parent().unwrap_or(&path).to_path_buf();
+        let Some(term) = self.terminal.clone() else {
+            self.set_toast("未检测到可用终端");
+            return;
+        };
+        self.run_in_terminal(&term, &dir, &script, "安装");
+    }
+
     // ---------- 双击打开 ----------
 
     /// 用 terax 编辑器打开文本文件（Linux 版）。
@@ -1438,22 +1606,30 @@ read
     /// 操作菜单选项列表（后续新增功能直接加到这里）
     /// `runnable` 为 true 时显示"运行脚本"
     /// `is_dir` 为 true 时显示"粘贴文件"（仅目录可粘贴）
-    pub fn action_menu_options(runnable: bool, is_dir: bool) -> Vec<&'static str> {
-        let mut options = vec!["1. 复制文件"]; // 所有文件/目录都可复制
+    /// `installable` 为 true 时显示"安装"
+    pub fn action_menu_options(runnable: bool, is_dir: bool, installable: bool) -> Vec<String> {
+        let mut options = vec!["1. 复制文件".to_string()];
+        let mut idx = 2;
 
         // 仅目录显示"粘贴文件"选项
         if is_dir {
-            options.push("2. 粘贴文件");
+            options.push(format!("{}. 粘贴文件", idx));
+            idx += 1;
+        }
+
+        // 可安装文件显示"安装"
+        if installable {
+            options.push(format!("{}. 安装", idx));
+            idx += 1;
         }
 
         // 可执行文件显示"运行脚本"
         if runnable {
-            options.push(if is_dir { "3. 运行脚本" } else { "2. 运行脚本" });
-            options.push(if is_dir { "4. 删除" } else { "3. 删除" });
-        } else {
-            options.push(if is_dir { "3. 删除" } else { "2. 删除" });
+            options.push(format!("{}. 运行脚本", idx));
+            idx += 1;
         }
 
+        options.push(format!("{}. 删除", idx));
         options
     }
 
@@ -1466,26 +1642,19 @@ read
         let node = self.tree.cursor_node();
         let runnable = is_runnable(&node.path);
         let is_dir = node.is_dir();
+        let installable = is_installable(&node.path);
+        let options = Self::action_menu_options(runnable, is_dir, installable);
 
-        if is_dir {
-            // 目录：复制、粘贴、运行脚本（如果是可执行目录）、删除
-            match self.action_menu_index {
-                0 => self.copy_files_to_clipboard(),
-                1 => self.paste_files_from_clipboard(),
-                2 if runnable => self.run_script(),
-                2 if !runnable => self.delete_current(),
-                3 if runnable => self.delete_current(),
-                _ => {}
-            }
-        } else {
-            // 文件：复制、运行脚本（如果可执行）、删除
-            match self.action_menu_index {
-                0 => self.copy_files_to_clipboard(),
-                1 if runnable => self.run_script(),
-                1 if !runnable => self.delete_current(),
-                2 if runnable => self.delete_current(),
-                _ => {}
-            }
+        // 根据选项文本确定实际执行的操作
+        let action = options.get(self.action_menu_index).map(|s| s.as_str());
+
+        match action {
+            Some(s) if s.contains("复制文件") => self.copy_files_to_clipboard(),
+            Some(s) if s.contains("粘贴文件") => self.paste_files_from_clipboard(),
+            Some(s) if s.contains("安装") => self.install_file(),
+            Some(s) if s.contains("运行脚本") => self.run_script(),
+            Some(s) if s.contains("删除") => self.delete_current(),
+            _ => {}
         }
         self.mode = Mode::Browse;
     }
@@ -1499,7 +1668,8 @@ read
         let node = self.tree.cursor_node();
         let runnable = is_runnable(&node.path);
         let is_dir = node.is_dir();
-        let options = Self::action_menu_options(runnable, is_dir);
+        let installable = is_installable(&node.path);
+        let options = Self::action_menu_options(runnable, is_dir, installable);
         let menu_w = 40u16.min(w.saturating_sub(2));
         let menu_h = (options.len() as u16 + 4).min(h.saturating_sub(4));
         let menu_x = w / 2 - menu_w / 2;
@@ -1682,6 +1852,18 @@ const SCRIPT_EXTS: &[&str] = &[
     "jar", "groovy", "gradle",
 ];
 
+/// 可通过右键"安装"安装的扩展名（小写）
+const INSTALLABLE_EXTS: &[&str] = &[
+    // Android
+    "apk", "aab",
+    // Linux 包管理
+    "deb", "rpm", "flatpak", "snap", "appimage",
+    // macOS 安装包
+    "pkg", "dmg",
+    // Windows 安装包
+    "msi", "exe",
+];
+
 /// 递归复制目录及其所有内容。
 /// 用于粘贴功能中复制目录。
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1725,6 +1907,16 @@ pub(crate) fn is_runnable(path: &std::path::Path) -> bool {
                 return true;
             }
         }
+    }
+    false
+}
+
+/// 判断文件是否可通过"安装"选项安装：
+/// 扩展名在 INSTALLABLE_EXTS 中
+pub(crate) fn is_installable(path: &std::path::Path) -> bool {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_l = ext.to_lowercase();
+        return INSTALLABLE_EXTS.contains(&ext_l.as_str());
     }
     false
 }
